@@ -1,0 +1,1 @@
+pip install fastapi uvicorn sqlalchemy pymysql python-dotenv pydantic-settings alembic python-jose passlib bcrypt requests
