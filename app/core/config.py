@@ -1,4 +1,9 @@
-from pydantic_settings import BaseSettings
+from pathlib import Path
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+
 
 class Settings(BaseSettings):
     DB_HOST: str
@@ -8,16 +13,12 @@ class Settings(BaseSettings):
     DB_PASSWORD: str
 
     JWT_SECRET: str
-
     AI_SERVER: str
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(
+        env_file=BASE_DIR / ".env.local",
+        env_file_encoding="utf-8"
+    )
+
 
 settings = Settings()
-
-# 사용할 때에는 다음과 같음
-# 어느 파일에서든 밑과 같이 사용하면 됨
-# from app.core.config import settings
-
-# print(settings.DB_HOST)

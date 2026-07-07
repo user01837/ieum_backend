@@ -1,9 +1,9 @@
-from dotenv import load_dotenv
 from fastapi import FastAPI
-
-load_dotenv(".env.local")
+from app.db.database import test_connection
 
 app = FastAPI()
+
+test_connection()
 
 
 @app.get("/")
