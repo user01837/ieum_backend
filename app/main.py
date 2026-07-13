@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.database import test_connection
-from app.api.routers import auth
+from app.api.routers import auth, department
 
 app = FastAPI()
 
@@ -25,6 +25,7 @@ test_connection()
 
 # --- 라우터 포함 ---
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
+app.include_router(department.router, prefix="/departments", tags=["Departments"])
 
 @app.get("/")
 def root():

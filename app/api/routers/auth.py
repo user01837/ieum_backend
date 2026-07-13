@@ -20,7 +20,7 @@ class UserLoginRequest(BaseModel):
     """로그인 요청 시 Body에 포함될 데이터 모델"""
     userId: str
     password: str
-    position_code: str = Field(max_length=10)
+    department_code: str = Field(max_length=10)
 
 class UserInfo(BaseModel):
     """응답에 포함될 사용자 정보 모델"""
@@ -29,6 +29,7 @@ class UserInfo(BaseModel):
     position_code: str | None
     department_code: str | None
     system_role_code: str | None
+    mustChangePassword: bool
 
 class TokenResponse(BaseModel):
     """로그인 성공 시 반환될 데이터 모델"""
@@ -37,6 +38,19 @@ class TokenResponse(BaseModel):
     mustChangePassword: bool
     token_type: str = "bearer"
     user: UserInfo
+
+class RefreshTokenRequest(BaseModel):
+    """리프레시 토큰을 포함하는 요청 모델"""
+    refreshToken: str
+
+class AccessTokenResponse(BaseModel):
+    """새로운 Access Token을 포함하는 응답 모델"""
+    accessToken: str
+
+class PasswordChangeRequest(BaseModel):
+    """비밀번호 변경 요청 모델"""
+    oldPassword: str
+    newPassword: str
 
 # --- 보안 및 JWT 설정 ---
 
@@ -80,6 +94,10 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     """입력된 비밀번호와 해시된 비밀번호를 비교합니다."""
     return pwd_context.verify(plain_password, hashed_password)
 
+def get_password_hash(password: str) -> str:
+    """비밀번호를 해시합니다."""
+    return pwd_context.hash(password)
+
 def create_token(data: dict, expires_delta: timedelta) -> str:
     """JWT 토큰을 생성합니다."""
     to_encode = data.copy()
@@ -109,11 +127,11 @@ def login(login_request: UserLoginRequest, db: Session = Depends(get_db)):
     # 데이터베이스에서 사용자 조회
     user = db.query(User).filter(User.user_id == login_request.userId).first()
 
-    # 사용자 존재 여부 및 비밀번호 확인 (DB의 'password' 컬럼 사용)
-    if not user or not verify_password(login_request.password, user.password):
+    # 사용자, 비밀번호, 부서코드 확인
+    if not user or not verify_password(login_request.password, user.password) or user.department_code != login_request.department_code:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="사번 또는 비밀번호가 일치하지 않습니다.",
+            detail="사번, 비밀번호 또는 부서가 일치하지 않습니다.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -121,10 +139,17 @@ def login(login_request: UserLoginRequest, db: Session = Depends(get_db)):
     token_data = {"sub": str(user.user_id), "pos": user.position_code}
 
     # 토큰 생성
+    refresh_token_expires = timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     access_token = create_token(token_data, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    refresh_token = create_token(token_data, timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
+    refresh_token = create_token({"sub": str(user.user_id)}, refresh_token_expires)
 
-    # DB에 must_change_password 필드가 없는 경우를 대비하여 안전하게 값을 가져옴
+    # DB에 Refresh Token 및 마지막 로그인 시간 저장
+    user.refresh_token = refresh_token
+    user.token_expires_at = datetime.now(timezone.utc) + refresh_token_expires
+    user.last_login_at = datetime.now(timezone.utc)
+    db.commit()
+
+    # 비밀번호 변경 필요 여부 확인
     must_change = getattr(user, 'must_change_password', False)
 
     # 응답에 포함할 사용자 정보 생성
@@ -133,7 +158,8 @@ def login(login_request: UserLoginRequest, db: Session = Depends(get_db)):
         name=user.name,
         position_code=user.position_code,
         department_code=user.department_code,
-        system_role_code=user.system_role_code
+        system_role_code=user.system_role_code,
+        mustChangePassword=must_change
     )
 
     return TokenResponse(
@@ -162,5 +188,99 @@ async def read_users_me(current_user: User = Depends(get_current_user)):
         name=current_user.name,
         position_code=current_user.position_code,
         department_code=current_user.department_code,
-        system_role_code=current_user.system_role_code
+        system_role_code=current_user.system_role_code,
+        mustChangePassword=current_user.must_change_password
     )
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="사용자 로그아웃",
+    responses={
+        status.HTTP_404_NOT_FOUND: {"description": "유효하지 않은 리프레시 토큰"},
+    }
+)
+async def logout(request: RefreshTokenRequest, db: Session = Depends(get_db)):
+    """
+    리프레시 토큰을 사용하여 사용자를 로그아웃 처리합니다.
+
+    - 데이터베이스에 저장된 사용자의 Refresh Token을 무효화합니다.
+    - 클라이언트는 이 API 호출 후 Access Token과 Refresh Token을 모두 폐기해야 합니다.
+    """
+    user_to_logout = db.query(User).filter(User.refresh_token == request.refreshToken).first()
+
+    # 토큰이 DB에 없더라도 에러를 발생시키지 않고 정상 처리(204)하여,
+    # 클라이언트가 이미 로그아웃된 상태에서 다시 로그아웃을 시도해도 문제가 없도록 합니다.
+    if user_to_logout:
+        user_to_logout.refresh_token = None
+        user_to_logout.token_expires_at = None
+        db.commit()
+
+    # 204 응답에는 본문이 없으므로 아무것도 반환하지 않습니다.
+
+@router.post(
+    "/refresh",
+    response_model=AccessTokenResponse,
+    summary="Access Token 재발급",
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {"description": "Refresh Token 만료 또는 불일치"},
+    }
+)
+def refresh_access_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):
+    """
+    유효한 Refresh Token을 사용하여 만료된 Access Token을 재발급합니다.
+    """
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Refresh Token이 유효하지 않거나 만료되었습니다.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    # DB에서 리프레시 토큰으로 사용자 조회
+    user = db.query(User).filter(User.refresh_token == request.refreshToken).first()
+
+    # 사용자가 없거나, DB에 저장된 토큰 만료 시간이 지났으면 에러 발생
+    if not user or not user.token_expires_at or user.token_expires_at < datetime.now(timezone.utc):
+        raise credentials_exception
+
+    # 새로운 Access Token 생성
+    token_data = {"sub": str(user.user_id), "pos": user.position_code}
+    new_access_token = create_token(
+        data=token_data, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+
+    return AccessTokenResponse(accessToken=new_access_token)
+
+@router.post(
+    "/password",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="비밀번호 변경",
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {"description": "현재 비밀번호 불일치 또는 인증 실패"},
+    }
+)
+def change_password(
+    request: PasswordChangeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    현재 로그인된 사용자의 비밀번호를 변경합니다.
+
+    - `must_change_password`가 true였던 사용자가 변경 시, 해당 플래그를 false로 업데이트합니다.
+    """
+    # 현재 비밀번호가 맞는지 확인
+    if not verify_password(request.oldPassword, current_user.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="현재 비밀번호가 일치하지 않습니다."
+        )
+
+    # 새로운 비밀번호를 해시하여 업데이트
+    current_user.password = get_password_hash(request.newPassword)
+    
+    # 비밀번호 변경 강제 플래그가 있었다면 해제
+    if current_user.must_change_password:
+        current_user.must_change_password = False
+    
+    db.commit()
