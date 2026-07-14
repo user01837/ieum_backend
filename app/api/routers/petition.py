@@ -1,9 +1,10 @@
 import math
-from fastapi import APIRouter, Depends, Query, HTTPException, status
+from fastapi import APIRouter, Depends, Query, HTTPException, status, Form, File, UploadFile
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, case
-from pydantic import BaseModel, Field
-from typing import List, Optional, Union
+from datetime import datetime
+from pydantic import BaseModel
+from typing import List, Optional
 
 from app.db.session import get_db
 from app.models.petition import Petition
@@ -13,6 +14,7 @@ from app.models.department import Department
 from app.models.task_assignee import TaskAssignee
 from app.api.routers.auth import get_current_user
 from app.models.petition_attachment import PetitionAttachment
+from app.services.s3_service import upload_file_to_s3
 
 # --- 상수 및 맵 ---
 
@@ -76,10 +78,9 @@ class PetitionDetailResponse(BaseModel):
     manualAnswer: str | None
     attachments: List[AttachmentDetail]
 
-class PetitionTempSaveRequest(BaseModel):
-    manualAnswer: Optional[str] = Field(None, description="작성 중인 답변 내용")
-    assigneeUserId: Optional[Union[str, int]] = Field(None, description="새로 지정할 담당자의 사번")
-
+class DeleteAttachmentResponse(BaseModel):
+    message: str
+    complaintId: int
 
 # --- 라우터 ---
 
@@ -266,7 +267,10 @@ def get_petition_detail(
         )
 
     # 5. 첨부파일 목록 조회
-    attachments_from_db = db.query(PetitionAttachment).filter(PetitionAttachment.petition_id == complaintId).order_by(PetitionAttachment.attachment_id).all()
+    attachments_from_db = db.query(PetitionAttachment)\
+        .filter(PetitionAttachment.petition_id == complaintId, PetitionAttachment.is_deleted == False)\
+        .order_by(PetitionAttachment.attachment_id)\
+        .all()
     attachments_list = [
         AttachmentDetail(
             attachmentId=att.attachment_id,
@@ -308,21 +312,25 @@ def get_petition_detail(
 )
 def temp_save_petition(
     complaintId: int,
-    request: PetitionTempSaveRequest,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    manualAnswer: Optional[str] = Form(None),
+    assigneeUserId: Optional[str] = Form(None),
+    files: List[UploadFile] = File([])
 ):
     """
     민원 답변을 임시저장하고, 필요 시 담당자를 변경합니다.
+    파일이 함께 전송된 경우, S3에 업로드하고 DB에 정보를 저장합니다.
 
+    - **multipart/form-data** 형식으로 요청해야 합니다.
     - 현재 민원의 담당자만 이 작업을 수행할 수 있습니다.
     - 임시저장 시 민원 상태가 '대기중'('01')이었다면 '처리중'('02')으로 변경됩니다.
     """
     # 0. 요청 유효성 검사: 업데이트할 내용이 하나라도 있는지 확인
-    if request.manualAnswer is None and request.assigneeUserId is None:
+    if manualAnswer is None and assigneeUserId is None and not files:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="업데이트할 답변 내용이나 변경할 담당자 정보가 없습니다."
+            detail="업데이트할 답변 내용, 변경할 담당자 정보, 또는 파일이 없습니다."
         )
 
     # 1. 민원 조회 (동시 수정을 방지하기 위해 비관적 잠금 사용)
@@ -342,13 +350,13 @@ def temp_save_petition(
         )
 
     # 3. 답변 내용 업데이트
-    if request.manualAnswer is not None:
-        petition.manual_answer = request.manualAnswer
+    if manualAnswer is not None:
+        petition.manual_answer = manualAnswer
 
     # 4. 담당자 변경 처리
-    if request.assigneeUserId and str(request.assigneeUserId) != str(petition.assignee_user_id):
+    if assigneeUserId and str(assigneeUserId) != str(petition.assignee_user_id):
         # assigneeUserId를 문자열로 변환하여 DB 조회 및 저장을 일관성 있게 처리합니다.
-        new_assignee_id_str = str(request.assigneeUserId)
+        new_assignee_id_str = str(assigneeUserId)
         new_assignee = db.query(User).filter(User.user_id == new_assignee_id_str).first()
         if not new_assignee:
             raise HTTPException(
@@ -361,7 +369,155 @@ def temp_save_petition(
     if petition.status_code == "01":
         petition.status_code = "02"
 
-    # 6. 변경사항 저장
+    # 6. 첨부파일 처리
+    if files:
+        for file in files:
+            # S3에 파일 업로드
+            file_url = upload_file_to_s3(file)
+
+            # DB에 첨부파일 정보 저장
+            new_attachment = PetitionAttachment(
+                petition_id=petition.petition_id,
+                file_name=file.filename,
+                file_url=file_url,
+                is_staff_upload=True  # 담당자가 업로드
+            )
+            db.add(new_attachment)
+
+    # 7. 변경사항 저장
     db.commit()
 
     return {"message": "저장 되었습니다."}
+
+@router.post(
+    "/{complaintId}/answer",
+    status_code=status.HTTP_200_OK,
+    summary="민원 답변 완료",
+    responses={
+        status.HTTP_200_OK: {"description": "답변 완료 성공"},
+        status.HTTP_400_BAD_REQUEST: {"description": "요청값 오류 또는 이미 처리된 민원"},
+        status.HTTP_401_UNAUTHORIZED: {"description": "인증 실패"},
+        status.HTTP_403_FORBIDDEN: {"description": "권한 없음 (담당자만 가능)"},
+        status.HTTP_404_NOT_FOUND: {"description": "존재하지 않는 민원"},
+    }
+)
+def answer_petition(
+    complaintId: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    manualAnswer: str = Form(...),
+    files: List[UploadFile] = File([])
+):
+    """
+    민원 답변을 최종 제출하고 상태를 '완료'로 변경합니다.
+    파일이 함께 전송된 경우, S3에 업로드하고 DB에 정보를 저장합니다.
+
+    - **multipart/form-data** 형식으로 요청해야 합니다.
+    - 현재 민원의 담당자만 이 작업을 수행할 수 있습니다.
+    - 답변이 제출되면 `answered_at`이 기록되고 상태 코드가 '03'(완료)으로 변경됩니다.
+    """
+    # 1. 민원 조회 (동시 수정을 방지하기 위해 비관적 잠금 사용)
+    petition = db.query(Petition).filter(Petition.petition_id == complaintId).with_for_update().first()
+
+    if not petition:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="존재하지 않는 민원입니다."
+        )
+
+    # 2. 권한 확인 (담당자만 가능)
+    if str(petition.assignee_user_id) != str(current_user.user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="이 민원에 답변할 권한이 없습니다. (담당자만 가능)"
+        )
+
+    # 3. 이미 완료된 민원인지 확인
+    if petition.status_code == '03':
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="이미 답변이 완료된 민원입니다."
+        )
+
+    # 4. 답변 내용, 상태, 답변 시간 업데이트
+    petition.manual_answer = manualAnswer
+    petition.status_code = "03"
+    petition.answered_at = datetime.now()
+
+    # 5. 첨부파일 처리
+    if files:
+        for file in files:
+            # S3에 파일 업로드
+            file_url = upload_file_to_s3(file)
+
+            # DB에 첨부파일 정보 저장
+            new_attachment = PetitionAttachment(
+                petition_id=petition.petition_id,
+                file_name=file.filename,
+                file_url=file_url,
+                is_staff_upload=True  # 담당자가 업로드
+            )
+            db.add(new_attachment)
+
+    # 6. 변경사항 저장
+    db.commit()
+
+    return {"message": "답변이 완료되었습니다."}
+
+@router.delete(
+    "/attachments/{attachmentId}",
+    status_code=status.HTTP_200_OK,
+    response_model=DeleteAttachmentResponse,
+    summary="첨부파일 삭제 (소프트 삭제)",
+    responses={
+        status.HTTP_200_OK: {"description": "첨부파일 삭제 성공"},
+        status.HTTP_401_UNAUTHORIZED: {"description": "인증 실패"},
+        status.HTTP_403_FORBIDDEN: {"description": "권한 없음 (담당자만 가능)"},
+        status.HTTP_404_NOT_FOUND: {"description": "존재하지 않는 첨부파일"},
+    }
+)
+def delete_attachment(
+    attachmentId: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    특정 첨부파일을 소프트 삭제 처리합니다.
+
+    - `is_deleted` 플래그를 `True`로, `deleted_at`을 현재 시간으로 설정합니다.
+    - 원본 민원의 담당자만 이 작업을 수행할 수 있습니다.
+    - 이미 완료된 민원의 첨부파일은 삭제할 수 없습니다.
+    """
+    # 1. 첨부파일 조회
+    attachment = db.query(PetitionAttachment).filter(PetitionAttachment.attachment_id == attachmentId).first()
+
+    if not attachment or attachment.is_deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="존재하지 않거나 이미 삭제된 첨부파일입니다."
+        )
+
+    # 2. 원본 민원을 조회하여 권한 확인
+    petition = db.query(Petition).filter(Petition.petition_id == attachment.petition_id).first()
+
+    if not petition:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="첨부파일에 연결된 민원을 찾을 수 없습니다.")
+
+    # 3. 권한 확인 (담당자이고, 민원이 완료되지 않은 상태여야 함)
+    if str(petition.assignee_user_id) != str(current_user.user_id) or petition.status_code == '03':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="이 첨부파일을 삭제할 권한이 없습니다."
+        )
+
+    # 4. 소프트 삭제 처리
+    attachment.is_deleted = True
+    attachment.deleted_at = datetime.now()
+
+    # 5. 변경사항 저장
+    db.commit()
+
+    return DeleteAttachmentResponse(
+        message="첨부파일이 삭제되었습니다.",
+        complaintId=attachment.petition_id
+    )

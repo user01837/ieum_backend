@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime
 from app.db.database import Base
 
 class PetitionAttachment(Base):
@@ -9,3 +9,5 @@ class PetitionAttachment(Base):
     file_name = Column(String(255), nullable=False)
     file_url = Column(String(500), nullable=False)
     is_staff_upload = Column(Boolean, nullable=False, default=False)
+    is_deleted = Column(Boolean, nullable=False, default=False)
+    deleted_at = Column(DateTime, nullable=True)

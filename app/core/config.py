@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     JWT_SECRET: str
     AI_SERVER: str
 
+    # AWS S3
+    AWS_ACCESS_KEY_ID: str
+    AWS_SECRET_ACCESS_KEY: str
+    AWS_S3_REGION: str
+    AWS_S3_BUCKET_NAME: str
+
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env.local",
         env_file_encoding="utf-8"
