@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Boolean, Integer, DateTime, func
+from sqlalchemy import Column, String, Boolean, Integer, DateTime, func, ForeignKey
 from app.db.database import Base
 
 class User(Base):
@@ -13,7 +13,7 @@ class User(Base):
     department_code = Column(String(10), nullable=True)
     system_role_code = Column(String(10), nullable=True)
     status_code = Column(String(10), nullable=True)
-    predecessor_user_id = Column(Integer, nullable=True)
+    predecessor_user_id = Column(String(50), ForeignKey("user.user_id"), nullable=True)
     refresh_token = Column(String(512), nullable=True)
     token_expires_at = Column(DateTime, nullable=True)
     last_login_at = Column(DateTime, nullable=True)

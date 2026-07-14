@@ -1,8 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.database import test_connection
-from app.api.routers import auth, department, user
-from app.api.routers import project
+from app.api.routers import auth, department, user, petition, task, project
 
 app = FastAPI()
 
@@ -29,6 +28,8 @@ app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(department.router, prefix="/departments", tags=["Departments"])
 app.include_router(user.router, prefix="/users", tags=["Users"])
 app.include_router(project.router, prefix="/projects", tags=["Projects"])
+app.include_router(petition.router, prefix="/petitions", tags=["Petitions"])
+app.include_router(task.router, prefix="/tasks", tags=["Tasks"])
 
 @app.get("/")
 def root():
