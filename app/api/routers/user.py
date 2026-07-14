@@ -11,7 +11,7 @@ from app.api.routers.auth import get_current_user
 # --- Pydantic 스키마 ---
 
 class UserSearchResult(BaseModel):
-    userId: int
+    userId: str
     name: str
     positionName: str | None
     departmentName: str | None
@@ -59,7 +59,7 @@ def search_users(
 
     return [
         UserSearchResult(
-            userId=u.user_id,
+            userId=str(u.user_id),
             name=u.name,
             positionName=POSITION_MAP.get(u.position_code),
             departmentName=dept.name if dept else None,
