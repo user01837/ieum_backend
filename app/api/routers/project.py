@@ -164,15 +164,11 @@ def get_project_list(
     db: Session = Depends(get_db),
 ):
     if scope == "MY":
-        # 내가 주관(role_code=01)인 프로젝트
-        project_ids = db.query(ProjectMember.project_id).filter(
-            ProjectMember.user_id == current_user.user_id,
-            ProjectMember.role_code == "01",
-        ).subquery()
-        query = db.query(Project).filter(Project.project_id.in_(project_ids))
+        query = db.query(Project).filter(
+            Project.department_code == current_user.department_code
+        )
 
     elif scope == "JOINED":
-        # 내가 협력(role_code=02)으로 참여한 프로젝트
         project_ids = db.query(ProjectMember.project_id).filter(
             ProjectMember.user_id == current_user.user_id,
             ProjectMember.role_code == "02",
@@ -180,14 +176,16 @@ def get_project_list(
         query = db.query(Project).filter(Project.project_id.in_(project_ids))
 
     elif scope == "PREDECESSOR":
-        # 전임자의 주관 프로젝트
         if not current_user.predecessor_user_id:
             return ProjectListResponse(content=[], totalElements=0, totalPages=0, page=page, size=size)
         project_ids = db.query(ProjectMember.project_id).filter(
             ProjectMember.user_id == current_user.predecessor_user_id,
             ProjectMember.role_code == "01",
         ).subquery()
-        query = db.query(Project).filter(Project.project_id.in_(project_ids))
+        query = db.query(Project).filter(
+            Project.project_id.in_(project_ids),
+            Project.stage_code == "02",
+        )
 
     else:
         raise HTTPException(status_code=400, detail="유효하지 않은 scope 값입니다.")
