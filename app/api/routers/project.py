@@ -55,6 +55,7 @@ class MemberItem(BaseModel):
     userId: int
     name: str
     roleName: str
+    departmentName: str
 
 class ProjectListItem(BaseModel):
     projectId: int
@@ -121,12 +122,13 @@ def build_detail_response(project: Project, db: Session) -> ProjectDetailRespons
     ).filter(ProjectMember.project_id == project.project_id).all()
 
     members = [
-        MemberItem(
-            userId=u.user_id,
-            name=u.name,
-            roleName=ROLE_NAME_MAP.get(pm.role_code, ""),
-        )
-        for pm, u in members_raw
+    MemberItem(
+        userId=u.user_id,
+        name=u.name,
+        roleName=ROLE_NAME_MAP.get(pm.role_code, ""),
+        departmentName=get_department_name(u.department_code, db),
+    )
+    for pm, u in members_raw
     ]
 
     return ProjectDetailResponse(
