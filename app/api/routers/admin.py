@@ -121,7 +121,7 @@ def get_users_for_management(
     # 7. 응답 데이터 구성
     content = []
     for user, dept_name, pred_name in results:
-        predecessor_info = PredecessorInfo(userId=user.predecessor_user_id, name=pred_name) if user.predecessor_user_id and pred_name else None
+        predecessor_info = PredecessorInfo(userId=str(user.predecessor_user_id), name=pred_name) if user.predecessor_user_id and pred_name else None
         content.append(UserManagementInfo(userId=str(user.user_id), name=user.name, departmentName=dept_name, positionName=POSITION_MAP.get(user.position_code), taskNames=task_map.get(user.user_id, []), predecessor=predecessor_info, statusName=USER_STATUS_MAP.get(user.status_code)))
 
     return PaginatedUserManagementResponse(content=content, totalElements=total_elements, totalPages=total_pages, page=page, size=size)

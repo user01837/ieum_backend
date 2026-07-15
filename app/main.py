@@ -15,7 +15,7 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,       # 허용할 출처 목록
+    allow_origins=["*"],         # 모든 출처 허용 (디버깅용)
     allow_credentials=True,      # 쿠키를 포함한 요청 허용
     allow_methods=["*"],         # 모든 HTTP 메소드 허용
     allow_headers=["*"],         # 모든 HTTP 헤더 허용
