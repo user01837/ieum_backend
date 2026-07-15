@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional
 import httpx
 
 from app.api.routers.auth import get_current_user
@@ -24,6 +24,32 @@ class LegalChatResponse(BaseModel):
     answer: str
     referenced_articles: List[ReferencedArticle]
 
+# --- 유사 민원 검색 스키마 ---
+
+class SimilarPetitionsRequest(BaseModel):
+    """유사 민원 검색 요청 스키마 (프론트엔드 -> 백엔드)"""
+    title: str = Field(..., description="현재 민원의 제목")
+    content: str = Field(..., description="현재 민원의 내용")
+    department_code: str = Field(..., description="현재 민원의 부서 코드")
+    top_k: int = Field(2, description="반환할 최대 결과 수")
+    exclude_ids: List[int] = Field([], description="결과에서 제외할 민원 ID 목록")
+    min_similarity: float = Field(0.0, description="최소 유사도 (0.0 ~ 100.0)")
+
+class SimilarPetitionResult(BaseModel):
+    """유사 민원 검색 결과 항목"""
+    complaint_id: int
+    title: str
+    content: str
+    answer: str
+    department_code: str
+    domain_code: str
+    status_code: str
+    similarity: float
+    rerank_score: float
+
+class SimilarPetitionsResponse(BaseModel):
+    """유사 민원 검색 응답 스키마"""
+    results: List[SimilarPetitionResult]
 # --- 라우터 ---
 
 router = APIRouter()
@@ -55,6 +81,46 @@ async def proxy_legal_chat(
                 timeout=60.0  # AI 응답 시간을 고려하여 타임아웃을 넉넉하게 설정
             )
             response.raise_for_status()  # 2xx가 아닌 응답 코드는 예외 발생
+            return response.json()
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"AI 서버에 연결할 수 없습니다: {exc}")
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(status_code=exc.response.status_code, detail=f"AI 서버에서 오류가 발생했습니다: {exc.response.text}")
+
+@router.post(
+    "/similar-petitions",
+    response_model=SimilarPetitionsResponse,
+    summary="AI 모델 중계 - 유사 민원 검색",
+    description="민원 내용과 유사한 과거 민원 사례를 AI 서버를 통해 검색합니다."
+)
+async def find_similar_petitions(
+    request: SimilarPetitionsRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    프론트엔드로부터 민원 제목, 내용을 받아 AI 서버에 유사 사례 검색을 요청하고,
+    그 결과를 다시 프론트엔드에 반환합니다.
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            # 1. 프론트에서 받은 제목과 내용을 합쳐 AI가 사용할 query_text 생성
+            query_text = f"{request.title}\n{request.content}"
+
+            # 2. AI 서버로 보낼 요청 데이터 구성
+            ai_request_payload = {
+                "query_text": query_text,
+                "department_code": request.department_code,
+                "top_k": request.top_k,
+                "exclude_ids": request.exclude_ids,
+                "min_similarity": request.min_similarity
+            }
+
+            # 3. AI 서버 엔드포인트 URL 구성
+            ai_endpoint_url = f"{settings.AI_SERVER.rstrip('/')}/api/similar-cases"
+
+            # 4. AI 서버에 POST 요청 전송
+            response = await client.post(ai_endpoint_url, json=ai_request_payload, timeout=60.0)
+            response.raise_for_status()
             return response.json()
         except httpx.RequestError as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"AI 서버에 연결할 수 없습니다: {exc}")
