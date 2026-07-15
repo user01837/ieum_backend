@@ -99,6 +99,7 @@ def get_petitions(
     size: int = Query(10, description="페이지 크기, 기본값 10"),
     sort: Optional[str] = Query(None, description="정렬 옵션: incomplete_first (미완료 우선) | due_date_impending (처리기한 임박순)"),
     taskId: Optional[int] = Query(None, description="Task 필터 (scope=TASK일 때)"),
+    departmentCode: Optional[str] = Query(None, alias="departmentCode", description="부서 코드 필터 (관리자용)"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -119,35 +120,39 @@ def get_petitions(
         Department, Petition.department_code == Department.department_code
     )
 
-    # 2. Scope에 따른 필터링
-    if scope.upper() == "MY":
-        query = query.filter(Petition.assignee_user_id == current_user.user_id)
-    elif scope.upper() == "TASK":
-        # taskId가 제공된 경우, 해당 업무로 추가 필터링
-        if taskId is not None:
-            query = query.filter(Petition.task_id == taskId)
-        # taskId가 없는 경우, 현재 사용자가 담당하는 모든 업무의 민원을 조회
-        else:
-            # 1. task_assignee 테이블에서 현재 사용자의 모든 task_id를 조회
-            user_task_ids_query = db.query(TaskAssignee.task_id).filter(TaskAssignee.user_id == current_user.user_id)
-            # 2. 해당 task_id 목록에 포함되는 민원들만 필터링
-            query = query.filter(Petition.task_id.in_(user_task_ids_query))
-    elif scope.upper() == "PREDECESSOR":
-        if not current_user.predecessor_user_id:
-            # 전임자가 없는 경우 빈 목록을 반환
-            return PaginatedPetitionResponse(content=[], totalElements=0, totalPages=0, page=page, size=size)
-        query = query.filter(Petition.assignee_user_id == current_user.predecessor_user_id)
-    # scope == "ALL"은 별도 필터링 없음
+    is_admin = current_user.system_role_code == '02'
 
-    # 보안/개인정보 보호 규칙 적용:
-    # 사용자는 기본적으로 (1) 자신에게 할당된 모든 민원 또는 (2) 상태가 '완료'인 모든 민원만 볼 수 있습니다.
-    # 이 필터는 사용자가 다른 사람의 '처리중' 또는 '대기중'인 민원을 볼 수 없도록 보장합니다.
-    # 이 로직은 scope와 무관하게 모든 민원 조회에 일관되게 적용됩니다.
-    query = query.filter(
-        or_(
-            Petition.assignee_user_id == current_user.user_id, Petition.status_code == "03"
+    # 2. Scope 및 권한에 따른 필터링
+    if is_admin:
+        # 관리자는 모든 민원을 볼 수 있음. 부서 코드로 추가 필터링 가능.
+        if departmentCode:
+            query = query.filter(Petition.department_code == departmentCode)
+    else:
+        # 일반 사용자 필터링 로직
+        if scope.upper() == "MY":
+            query = query.filter(Petition.assignee_user_id == current_user.user_id)
+        elif scope.upper() == "TASK":
+            # taskId가 제공된 경우, 해당 업무로 추가 필터링
+            if taskId is not None:
+                query = query.filter(Petition.task_id == taskId)
+            # taskId가 없는 경우, 현재 사용자가 담당하는 모든 업무의 민원을 조회
+            else:
+                # 1. task_assignee 테이블에서 현재 사용자의 모든 task_id를 조회
+                user_task_ids_query = db.query(TaskAssignee.task_id).filter(TaskAssignee.user_id == current_user.user_id)
+                # 2. 해당 task_id 목록에 포함되는 민원들만 필터링
+                query = query.filter(Petition.task_id.in_(user_task_ids_query))
+        elif scope.upper() == "PREDECESSOR":
+            if not current_user.predecessor_user_id:
+                # 전임자가 없는 경우 빈 목록을 반환
+                return PaginatedPetitionResponse(content=[], totalElements=0, totalPages=0, page=page, size=size)
+            query = query.filter(Petition.assignee_user_id == current_user.predecessor_user_id)
+        # scope == "ALL"은 별도 필터링 없음
+
+        # 보안/개인정보 보호 규칙 적용:
+        # 관리자가 아닌 경우, 자신에게 할당된 민원 또는 '완료' 상태의 민원만 볼 수 있음
+        query = query.filter(
+            or_(Petition.assignee_user_id == current_user.user_id, Petition.status_code == "03")
         )
-    )
     
     # 3. 상태(status)에 따른 필터링
     if petition_status != "ALL":
@@ -245,13 +250,13 @@ def get_petition_detail(
 
     p, task_name, assignee_user, department_name = query_result
 
-    # 3. 접근 권한 확인: 사용자는 (1) 자신에게 할당된 민원 또는 (2) '완료' 상태의 민원만 볼 수 있음
-    # DB 스키마상 user_id는 문자열(String)이지만, 숫자 형태의 ID는 DB 드라이버에 따라
-    # Python의 int 타입으로 반환될 수 있습니다. 이로 인해 타입 불일치로 인한 비교 오류가
-    # 발생할 수 있으므로, 비교 시 양쪽 모두를 str()로 명시적으로 변환하여 비교의 안정성을 보장합니다.
+    # 3. 접근 권한 확인
+    is_admin = current_user.system_role_code == '02'
     is_owner = p.assignee_user_id is not None and str(p.assignee_user_id) == str(current_user.user_id)
+    is_completed = p.status_code == "03"
 
-    if not (is_owner or p.status_code == "03"):
+    # 관리자가 아니고, 담당자도 아니며, 완료 상태도 아니면 접근 불가
+    if not (is_admin or is_owner or is_completed):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="이 민원에 접근할 권한이 없습니다."
