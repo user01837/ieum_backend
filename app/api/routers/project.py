@@ -195,7 +195,7 @@ def get_project_list(
 
     total_elements = query.count()
     total_pages = math.ceil(total_elements / size)
-    items = query.offset(page * size).limit(size).all()
+    items = query.order_by(Project.start_date.asc()).offset(page * size).limit(size).all()
 
     content = [
         ProjectListItem(
