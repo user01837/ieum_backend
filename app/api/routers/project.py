@@ -1,9 +1,12 @@
 from datetime import datetime, timezone, date
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 import math
+import io
+import urllib.parse
 
 from app.db.session import get_db
 from app.models.project import Project
@@ -11,6 +14,16 @@ from app.models.project_member import ProjectMember
 from app.models.user import User
 from app.models.department import Department
 from app.api.routers.auth import get_current_user
+
+from docx import Document as DocxDocument
+from docx.oxml.ns import qn
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+pdfmetrics.registerFont(TTFont('MalgunGothic', 'C:/Windows/Fonts/malgun.ttf'))
+from hwpx import HwpxDocument
+from bs4 import BeautifulSoup
 
 router = APIRouter()
 
@@ -122,13 +135,13 @@ def build_detail_response(project: Project, db: Session) -> ProjectDetailRespons
     ).filter(ProjectMember.project_id == project.project_id).all()
 
     members = [
-    MemberItem(
-        userId=u.user_id,
-        name=u.name,
-        roleName=ROLE_NAME_MAP.get(pm.role_code, ""),
-        departmentName=get_department_name(u.department_code, db),
-    )
-    for pm, u in members_raw
+        MemberItem(
+            userId=u.user_id,
+            name=u.name,
+            roleName=ROLE_NAME_MAP.get(pm.role_code, ""),
+            departmentName=get_department_name(u.department_code, db),
+        )
+        for pm, u in members_raw
     ]
 
     return ProjectDetailResponse(
@@ -166,9 +179,11 @@ def get_project_list(
     db: Session = Depends(get_db),
 ):
     if scope == "MY":
-        query = db.query(Project).filter(
-            Project.department_code == current_user.department_code
-        )
+        project_ids = db.query(ProjectMember.project_id).filter(
+            ProjectMember.user_id == current_user.user_id,
+            ProjectMember.role_code == "01",
+        ).subquery()
+        query = db.query(Project).filter(Project.project_id.in_(project_ids))
 
     elif scope == "JOINED":
         project_ids = db.query(ProjectMember.project_id).filter(
@@ -243,9 +258,8 @@ def create_project(
         stage_code="01",
     )
     db.add(project)
-    db.flush()  # project_id 확보
+    db.flush()
 
-    # 작성자 본인을 주관자(01)로 PROJECT_MEMBER에 추가
     owner_member = ProjectMember(
         project_id=project.project_id,
         user_id=current_user.user_id,
@@ -254,10 +268,9 @@ def create_project(
     )
     db.add(owner_member)
 
-    # 협업 멤버 추가 (협력자=02)
     for uid in body.memberUserIds:
         if uid == current_user.user_id:
-            continue  # 본인 중복 방지
+            continue
         member = ProjectMember(
             project_id=project.project_id,
             user_id=uid,
@@ -312,7 +325,6 @@ def update_project(
             detail="승인완료 상태라 수정할 수 없습니다.",
         )
 
-    # 기본 정보 수정
     project.name = body.name
     project.business_content = body.businessContent
     project.start_date = str_to_date(body.startDate)
@@ -322,18 +334,15 @@ def update_project(
     if body.reportContent is not None:
         project.report_content = body.reportContent
 
-    # memberUserIds diff 처리
     existing_members = db.query(ProjectMember).filter(
         ProjectMember.project_id == projectId
     ).all()
 
-    # 주관자(role_code=01)는 diff 대상에서 제외
     existing_collab_ids = {
         m.user_id for m in existing_members if m.role_code == "02"
     }
     new_collab_ids = set(body.memberUserIds)
 
-    # 제거: 기존에 있었는데 새 목록에 없는 협력자
     ids_to_remove = existing_collab_ids - new_collab_ids
     if ids_to_remove:
         db.query(ProjectMember).filter(
@@ -342,7 +351,6 @@ def update_project(
             ProjectMember.role_code == "02",
         ).delete(synchronize_session=False)
 
-    # 추가: 새 목록에 있는데 기존에 없는 협력자
     ids_to_add = new_collab_ids - existing_collab_ids
     for uid in ids_to_add:
         db.add(ProjectMember(
@@ -402,7 +410,6 @@ def delete_project(
             detail="저장(기획중) 상태인 프로젝트만 삭제할 수 있습니다.",
         )
 
-    # 연관된 PROJECT_MEMBER 먼저 삭제 (하드딜리트)
     db.query(ProjectMember).filter(
         ProjectMember.project_id == projectId
     ).delete(synchronize_session=False)
@@ -426,9 +433,123 @@ def get_ai_draft(
     if not project:
         raise HTTPException(status_code=404, detail="존재하지 않는 프로젝트입니다.")
 
-    # AI 연동은 추후 구현
-    # 현재는 빈 값 반환
     return AiDraftResponse(
         overview="",
         reportContent="",
     )
+
+
+# 8. 기획서 내보내기
+@router.get(
+    "/{projectId}/export",
+    summary="기획서 내보내기",
+)
+def export_project(
+    projectId: int,
+    format: str = Query(..., description="pdf | docx | hwpx"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = db.query(Project).filter(Project.project_id == projectId).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="존재하지 않는 프로젝트입니다.")
+
+    report_text = ""
+    if project.report_content:
+        soup = BeautifulSoup(project.report_content, "html.parser")
+        report_text = soup.get_text(separator="\n")
+
+    title = project.name or "기획서"
+
+    if format == "docx":
+        doc = DocxDocument()
+        style = doc.styles['Normal']
+        style.font.name = '맑은 고딕'
+        style.element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
+
+        heading = doc.add_heading(title, level=1)
+        for run in heading.runs:
+            run.font.name = '맑은 고딕'
+            run._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
+
+        if project.business_content:
+            h = doc.add_heading("사업 개요", level=2)
+            for run in h.runs:
+                run.font.name = '맑은 고딕'
+                run._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
+            p = doc.add_paragraph(project.business_content)
+            for run in p.runs:
+                run.font.name = '맑은 고딕'
+                run._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
+
+        if report_text:
+            h = doc.add_heading("기획서 본문", level=2)
+            for run in h.runs:
+                run.font.name = '맑은 고딕'
+                run._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
+            p = doc.add_paragraph(report_text)
+            for run in p.runs:
+                run.font.name = '맑은 고딕'
+                run._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
+
+        buf = io.BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(title)}.docx"}
+        )
+
+    elif format == "pdf":
+        buf = io.BytesIO()
+        c = canvas.Canvas(buf, pagesize=A4)
+        width, height = A4
+        c.setFont("MalgunGothic", 16)
+        c.drawString(50, height - 50, title)
+        c.setFont("MalgunGothic", 11)
+        y = height - 90
+        if project.business_content:
+            c.drawString(50, y, "사업 개요")
+            y -= 20
+            for line in project.business_content.split("\n"):
+                c.drawString(60, y, line)
+                y -= 15
+        if report_text:
+            y -= 10
+            c.drawString(50, y, "기획서 본문")
+            y -= 20
+            for line in report_text.split("\n"):
+                if y < 50:
+                    c.showPage()
+                    y = height - 50
+                c.drawString(60, y, line)
+                y -= 15
+        c.save()
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(title)}.pdf"}
+        )
+
+    elif format == "hwpx":
+        doc = HwpxDocument.new()
+        doc.add_paragraph(title)
+        if project.business_content:
+            doc.add_paragraph("사업 개요")
+            doc.add_paragraph(project.business_content)
+        if report_text:
+            doc.add_paragraph("기획서 본문")
+            doc.add_paragraph(report_text)
+        buf = io.BytesIO()
+        doc.save_to_stream(buf)
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/hwpx",
+            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(title)}.hwpx"}
+        )
+
+    else:
+        raise HTTPException(status_code=400, detail="지원하지 않는 형식입니다.")
