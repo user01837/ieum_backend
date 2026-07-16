@@ -1,10 +1,11 @@
 import math
-from fastapi import APIRouter, Depends, Query, HTTPException, status, Form, File, UploadFile
+from fastapi import APIRouter, Depends, Query, HTTPException, status, Form, File, UploadFile, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, case
 from datetime import datetime
 from pydantic import BaseModel
 from typing import List, Optional
+import httpx
 
 from app.db.session import get_db
 from app.models.petition import Petition
@@ -14,6 +15,7 @@ from app.models.department import Department
 from app.models.task_assignee import TaskAssignee
 from app.api.routers.auth import get_current_user
 from app.models.petition_attachment import PetitionAttachment
+from app.core.config import settings
 from app.services.s3_service import upload_file_to_s3
 
 # --- 상수 및 맵 ---
@@ -86,6 +88,31 @@ class DeleteAttachmentResponse(BaseModel):
 
 router = APIRouter()
 
+# --- 비공개 헬퍼 함수 ---
+
+def _call_ai_to_index_petition(petition_data: dict):
+    """
+    완료된 민원 정보를 AI 서버에 보내 색인을 요청하는 헬퍼 함수입니다.
+    BackgroundTasks를 통해 비동기적으로 실행됩니다.
+    """
+    try:
+        # AI 서버의 색인 API 엔드포인트 (실제 경로에 따라 수정 필요)
+        ai_endpoint_url = f"{settings.AI_SERVER.rstrip('/')}/api/index-complaint"
+
+        # 동기 방식으로 AI 서버에 POST 요청
+        response = httpx.post(ai_endpoint_url, json=petition_data, timeout=30.0)
+        response.raise_for_status()
+        
+        # 성공 시 로그 (실제 운영에서는 logging 모듈 사용 권장)
+        print(f"INFO: Successfully indexed petition ID: {petition_data.get('complaint_id')}")
+
+    except httpx.RequestError as exc:
+        print(f"ERROR: AI server connection error while indexing petition: {exc}")
+    except httpx.HTTPStatusError as exc:
+        print(f"ERROR: AI server status error while indexing petition: {exc.response.status_code} - {exc.response.text}")
+    except Exception as e:
+        print(f"ERROR: An unexpected error occurred while indexing petition: {e}")
+
 @router.get(
     "/",
     response_model=PaginatedPetitionResponse,
@@ -100,6 +127,7 @@ def get_petitions(
     sort: Optional[str] = Query(None, description="정렬 옵션: incomplete_first (미완료 우선) | due_date_impending (처리기한 임박순)"),
     taskId: Optional[int] = Query(None, description="Task 필터 (scope=TASK일 때)"),
     departmentCode: Optional[str] = Query(None, alias="departmentCode", description="부서 코드 필터 (관리자용)"),
+    keyword: Optional[str] = Query(None, description="검색어 (민원 제목)"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -157,6 +185,10 @@ def get_petitions(
     # 3. 상태(status)에 따른 필터링
     if petition_status != "ALL":
         query = query.filter(Petition.status_code == petition_status)
+
+    # 키워드 검색
+    if keyword:
+        query = query.filter(Petition.title.contains(keyword))
 
     # 4. 페이지네이션을 위한 전체 개수 조회
     total_elements = query.count()
@@ -408,6 +440,7 @@ def temp_save_petition(
 )
 def answer_petition(
     complaintId: int,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
     manualAnswer: str = Form(...),
@@ -466,6 +499,23 @@ def answer_petition(
 
     # 6. 변경사항 저장
     db.commit()
+
+    # 7. AI 서버에 색인 요청 (백그라운드 작업)
+    task = db.query(Task).filter(Task.task_id == petition.task_id).first()
+    domain_code = task.name if task else "기타"
+
+    ai_payload = {
+        "complaint_id": petition.petition_id,
+        "title": petition.title,
+        "content": petition.content,
+        "department_code": petition.department_code,
+        "domain_code": domain_code,
+        "status_code": "완료"
+    }
+    background_tasks.add_task(
+        _call_ai_to_index_petition,
+        ai_payload
+    )
 
     return {"message": "답변이 완료되었습니다."}
 
