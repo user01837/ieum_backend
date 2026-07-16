@@ -1,9 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db.database import test_connection
-from app.api.routers import auth, department, user, petition, task, project, upload, admin, ai
+from app.api.routers import auth, department, user, petition, task, project, upload, admin, ai, dashboard
 
 app = FastAPI()
+app.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
 
 # --- CORS 미들웨어 설정 ---
 # 프론트엔드(http://localhost:5173)에서의 요청을 허용하기 위함입니다.
