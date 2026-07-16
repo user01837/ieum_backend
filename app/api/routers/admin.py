@@ -1,6 +1,7 @@
 import math
 from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.orm import Session, aliased
+from sqlalchemy import func, case
 from pydantic import BaseModel
 from pydantic import Field
 from typing import Optional, List
@@ -62,6 +63,13 @@ class PasswordResetResponse(BaseModel):
     userId: str
     message: str
     temporaryPassword: str
+
+class AdminStatsResponse(BaseModel):
+    totalUsers: int
+    activeUsers: int
+    leaveUsers: int
+    resignedUsers: int
+    totalDepartments: int
 
 # --- 라우터 ---
 
@@ -361,4 +369,48 @@ def reset_user_password(
         userId=userId,
         message="비밀번호가 성공적으로 초기화되었습니다.",
         temporaryPassword=settings.DEFAULT_PASSWORD
+    )
+
+@router.get(
+    "/stats",
+    response_model=AdminStatsResponse,
+    summary="관리자 대시보드 통계 조회",
+    responses={
+        status.HTTP_200_OK: {"description": "집계 반환"},
+        status.HTTP_401_UNAUTHORIZED: {"description": "인증 실패"},
+        status.HTTP_403_FORBIDDEN: {"description": "관리자 권한 필요"},
+    }
+)
+def get_admin_stats(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    관리자 대시보드에 필요한 주요 통계(총 직원 수, 상태별 직원 수, 부서 수)를 조회합니다.
+    """
+    # 1. 관리자 권한 확인
+    if current_user.system_role_code != '02':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="관리자 권한이 필요합니다."
+        )
+
+    # 2. 직원 상태별 통계 조회 (효율적인 단일 쿼리)
+    user_stats = db.query(
+        func.count(User.user_id).label("total"),
+        func.sum(case((User.status_code == '01', 1), else_=0)).label("active"),
+        func.sum(case((User.status_code == '02', 1), else_=0)).label("leave"),
+        func.sum(case((User.status_code == '03', 1), else_=0)).label("resigned")
+    ).one()
+
+    # 3. 부서 수 조회
+    department_count = db.query(Department).count()
+
+    # 4. 응답 데이터 구성
+    return AdminStatsResponse(
+        totalUsers=user_stats.total or 0,
+        activeUsers=user_stats.active or 0,
+        leaveUsers=user_stats.leave or 0,
+        resignedUsers=user_stats.resigned or 0,
+        totalDepartments=department_count
     )
