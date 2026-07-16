@@ -137,6 +137,7 @@ def delete_task(
 class AssigneeRequest(BaseModel):
     userId: int
 
+# 부서관리 페이지
 # 4. 담당자 지정
 @router.post(
     "/{taskId}/assignees",
@@ -167,3 +168,27 @@ def add_assignee(
     assignee = TaskAssignee(task_id=taskId, user_id=str(body.userId))
     db.add(assignee)
     db.commit()
+
+# 부서관리 페이지
+# 5. 담당자 해제
+@router.delete(
+    "/{taskId}/assignees/{userId}",
+    status_code=status.HTTP_200_OK,
+    summary="담당자 해제",
+)
+def remove_assignee(
+    taskId: int,
+    userId: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    assignee = db.query(TaskAssignee).filter(
+        TaskAssignee.task_id == taskId,
+        TaskAssignee.user_id == str(userId),
+    ).first()
+    if not assignee:
+        raise HTTPException(status_code=404, detail="존재하지 않는 담당자입니다.")
+
+    db.delete(assignee)
+    db.commit()
+
