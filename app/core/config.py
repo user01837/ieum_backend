@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     AWS_S3_REGION: str
     AWS_S3_BUCKET_NAME: str
 
+    # 디폴트 비밀번호
+    DEFAULT_PASSWORD: str
+
+
+
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env.local",
         env_file_encoding="utf-8"
