@@ -138,15 +138,29 @@ def login(login_request: UserLoginRequest, db: Session = Depends(get_db)):
     # 토큰에 담을 데이터 (사용자 ID와 직책 코드 포함)
     token_data = {"sub": str(user.user_id), "pos": user.position_code}
 
-    # 토큰 생성
-    refresh_token_expires = timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
-    access_token = create_token(token_data, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    refresh_token = create_token({"sub": str(user.user_id)}, refresh_token_expires)
+    # 기존 로그인 세션 강제 종료
+    user.refresh_token = None
+    user.token_expires_at = None
+    db.commit()
 
-    # DB에 Refresh Token 및 마지막 로그인 시간 저장
+    # 새 토큰 발급
+    refresh_token_expires = timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+
+    access_token = create_token(
+    token_data,
+    timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+
+    refresh_token = create_token(
+    {"sub": str(user.user_id)},
+    refresh_token_expires
+    )
+
+    # 새 로그인 세션 저장
     user.refresh_token = refresh_token
     user.token_expires_at = datetime.now(timezone.utc) + refresh_token_expires
     user.last_login_at = datetime.now(timezone.utc)
+
     db.commit()
 
     # 비밀번호 변경 필요 여부 확인
@@ -221,35 +235,71 @@ async def logout(request: RefreshTokenRequest, db: Session = Depends(get_db)):
 @router.post(
     "/refresh",
     response_model=AccessTokenResponse,
-    summary="Access Token 재발급",
-    responses={
-        status.HTTP_401_UNAUTHORIZED: {"description": "Refresh Token 만료 또는 불일치"},
-    }
 )
-def refresh_access_token(request: RefreshTokenRequest, db: Session = Depends(get_db)):
-    """
-    유효한 Refresh Token을 사용하여 만료된 Access Token을 재발급합니다.
-    """
+def refresh_access_token(
+    request: RefreshTokenRequest,
+    db: Session = Depends(get_db)
+):
+
     credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
+        status_code=401,
         detail="Refresh Token이 유효하지 않거나 만료되었습니다.",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    # DB에서 리프레시 토큰으로 사용자 조회
-    user = db.query(User).filter(User.refresh_token == request.refreshToken).first()
+    user = db.query(User).filter(
+        User.refresh_token == request.refreshToken
+    ).first()
 
-    # 사용자가 없거나, DB에 저장된 토큰 만료 시간이 지났으면 에러 발생
-    if not user or not user.token_expires_at or user.token_expires_at < datetime.now(timezone.utc):
+    if not user:
         raise credentials_exception
 
-    # 새로운 Access Token 생성
-    token_data = {"sub": str(user.user_id), "pos": user.position_code}
+
+    expires_at = user.token_expires_at
+
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(
+            tzinfo=timezone.utc
+        )
+
+
+    if expires_at < datetime.now(timezone.utc):
+        raise credentials_exception
+
+
+    try:
+        payload = jwt.decode(
+            request.refreshToken,
+            settings.JWT_SECRET,
+            algorithms=[ALGORITHM]
+        )
+
+        user_id = payload.get("sub")
+
+        if str(user.user_id) != str(user_id):
+            raise credentials_exception
+
+    except JWTError:
+        raise credentials_exception
+
+
+    token_data = {
+        "sub": str(user.user_id),
+        "pos": user.position_code
+    }
+
+
     new_access_token = create_token(
-        data=token_data, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        data=token_data,
+        expires_delta=timedelta(
+            minutes=ACCESS_TOKEN_EXPIRE_MINUTES
+        )
     )
 
-    return AccessTokenResponse(accessToken=new_access_token)
+
+    return AccessTokenResponse(
+        accessToken=new_access_token
+    )
 
 @router.post(
     "/password",
