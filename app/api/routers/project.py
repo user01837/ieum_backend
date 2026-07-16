@@ -22,7 +22,7 @@ from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 pdfmetrics.registerFont(TTFont('MalgunGothic', 'C:/Windows/Fonts/malgun.ttf'))
-from hwpx import HwpxDocument
+from hwpx.document import HwpxDocument
 from bs4 import BeautifulSoup
 
 router = APIRouter()
