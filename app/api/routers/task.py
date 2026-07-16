@@ -11,6 +11,7 @@ from app.models.task_assignee import TaskAssignee
 
 router = APIRouter()
 
+# 민원처리 페이지
 class MyTaskResponse(BaseModel):
     """담당 업무 응답 모델"""
     taskId: int
@@ -38,3 +39,48 @@ def get_my_tasks(
 
     # 3. 응답 모델에 맞게 데이터 변환
     return [MyTaskResponse(taskId=task.task_id, name=task.name) for task in my_tasks]
+
+# 부서관리 페이지
+# API 1번: 내 부서 Task 목록 조회
+
+class AssigneeItem(BaseModel):
+    userId: int
+    name: str
+
+class TaskListItem(BaseModel):
+    taskId: int
+    name: str
+    assignees: List[AssigneeItem]
+
+@router.get(
+    "",
+    response_model=List[TaskListItem],
+    summary="내 부서 Task 목록 조회",
+)
+def get_department_tasks(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    tasks = db.query(Task).filter(
+        Task.department_code == current_user.department_code
+    ).all()
+
+    result = []
+    for task in tasks:
+        assignee_rows = (
+            db.query(TaskAssignee, User)
+            .join(User, TaskAssignee.user_id == User.user_id)
+            .filter(TaskAssignee.task_id == task.task_id)
+            .all()
+        )
+        assignees = [
+            AssigneeItem(userId=int(u.user_id), name=u.name)
+            for _, u in assignee_rows
+        ]
+        result.append(TaskListItem(
+            taskId=task.task_id,
+            name=task.name,
+            assignees=assignees,
+        ))
+
+    return result
