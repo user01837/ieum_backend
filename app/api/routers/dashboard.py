@@ -80,6 +80,7 @@ def get_due_soon_complaints(
             Petition.department_code == current_user.department_code,
             Petition.status_code != "03",
             Petition.due_date != None,
+            Petition.due_date >= today,
             Petition.due_date <= three_days_later,
         )
         .order_by(Petition.due_date.asc())
