@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List
@@ -41,8 +41,7 @@ def get_my_tasks(
     return [MyTaskResponse(taskId=task.task_id, name=task.name) for task in my_tasks]
 
 # 부서관리 페이지
-# API 1번: 내 부서 Task 목록 조회
-
+# API 1: 내 부서 Task 목록 조회
 class AssigneeItem(BaseModel):
     userId: int
     name: str
@@ -84,3 +83,87 @@ def get_department_tasks(
         ))
 
     return result
+
+# 부서관리 페이지
+class TaskCreateRequest(BaseModel):
+    name: str
+
+class TaskCreateResponse(BaseModel):
+    taskId: int
+    name: str
+
+# API 2번: 새 Task 생성
+@router.post(
+    "",
+    response_model=TaskCreateResponse,
+    status_code=status.HTTP_200_OK,
+    summary="새 Task 생성",
+)
+def create_task(
+    body: TaskCreateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    task = Task(
+        name=body.name,
+        department_code=current_user.department_code,
+    )
+    db.add(task)
+    db.commit()
+    db.refresh(task)
+
+    return TaskCreateResponse(taskId=task.task_id, name=task.name)
+
+# 부서관리 페이지
+# 3. Task 삭제
+@router.delete(
+    "/{taskId}",
+    status_code=status.HTTP_200_OK,
+    summary="Task 삭제",
+)
+def delete_task(
+    taskId: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    task = db.query(Task).filter(Task.task_id == taskId).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="존재하지 않는 Task입니다.")
+
+    db.query(TaskAssignee).filter(TaskAssignee.task_id == taskId).delete(synchronize_session=False)
+    db.delete(task)
+    db.commit()
+
+class AssigneeRequest(BaseModel):
+    userId: int
+
+# 4. 담당자 지정
+@router.post(
+    "/{taskId}/assignees",
+    status_code=status.HTTP_200_OK,
+    summary="담당자 지정",
+)
+def add_assignee(
+    taskId: int,
+    body: AssigneeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    task = db.query(Task).filter(Task.task_id == taskId).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="존재하지 않는 Task입니다.")
+
+    user = db.query(User).filter(User.user_id == str(body.userId)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="존재하지 않는 유저입니다.")
+
+    existing = db.query(TaskAssignee).filter(
+        TaskAssignee.task_id == taskId,
+        TaskAssignee.user_id == str(body.userId),
+    ).first()
+    if existing:
+        return
+
+    assignee = TaskAssignee(task_id=taskId, user_id=str(body.userId))
+    db.add(assignee)
+    db.commit()
