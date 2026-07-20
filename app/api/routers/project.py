@@ -175,10 +175,16 @@ def get_project_list(
     stage: Optional[str] = Query(None),
     page: int = Query(0, ge=0),
     size: int = Query(10, ge=1),
+    keyword: Optional[str] = Query(None),
+    department_code: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if scope == "MY":
+    # 관리자는 전체 프로젝트 조회
+    if current_user.system_role_code == "02":
+        query = db.query(Project)
+
+    elif scope == "MY":
         project_ids = db.query(ProjectMember.project_id).filter(
             ProjectMember.user_id == current_user.user_id,
             ProjectMember.role_code == "01",
@@ -209,6 +215,12 @@ def get_project_list(
 
     if stage:
         query = query.filter(Project.stage_code == stage)
+    
+    if keyword:
+        query = query.filter(Project.name.like(f"%{keyword}%"))
+
+    if department_code:  # ← 추가
+        query = query.filter(Project.department_code == department_code)
 
     total_elements = query.count()
     total_pages = math.ceil(total_elements / size)
@@ -223,7 +235,7 @@ def get_project_list(
             startDate=date_to_str(p.start_date),
             deadline=date_to_str(p.deadline),
             createdAt=datetime_to_str(p.created_at),
-            roleType=scope,
+            roleType="ADMIN" if current_user.system_role_code == "02" else scope,  # ← 수정
         )
         for p in items
     ]
