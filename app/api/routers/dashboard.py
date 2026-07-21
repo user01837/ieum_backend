@@ -29,14 +29,16 @@ class ComplaintSummaryResponse(BaseModel):
     summary="이번달 민원 건수",
 )
 def get_complaints_summary(
+    department_code: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    target_dept = department_code or current_user.department_code
     today = date.today()
     first_day = today.replace(day=1)
 
     query = db.query(Petition).filter(
-        Petition.department_code == current_user.department_code,
+        Petition.department_code == target_dept,
         Petition.received_at >= first_day,
     )
 
@@ -67,9 +69,11 @@ class DueSoonItem(BaseModel):
     summary="처리기한 임박 민원 목록 (D-3 이내)",
 )
 def get_due_soon_complaints(
+    department_code: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    target_dept = department_code or current_user.department_code
     today = date.today()
     three_days_later = today + timedelta(days=3)
 
@@ -77,7 +81,7 @@ def get_due_soon_complaints(
         db.query(Petition, User)
         .outerjoin(User, Petition.assignee_user_id == User.user_id)
         .filter(
-            Petition.department_code == current_user.department_code,
+            Petition.department_code == target_dept,
             Petition.status_code != "03",
             Petition.due_date != None,
             Petition.due_date >= today,
@@ -113,33 +117,36 @@ class TaskSummaryResponse(BaseModel):
     summary="Task 현황",
 )
 def get_tasks_summary(
+    department_code: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    target_dept = department_code or current_user.department_code
+
     total_tasks = db.query(Task).filter(
-        Task.department_code == current_user.department_code
+        Task.department_code == target_dept
     ).count()
 
     assigned_task_ids = db.query(TaskAssignee.task_id).join(
         Task, TaskAssignee.task_id == Task.task_id
     ).filter(
-        Task.department_code == current_user.department_code
+        Task.department_code == target_dept
     ).distinct().subquery()
 
     unassigned_tasks = db.query(Task).filter(
-        Task.department_code == current_user.department_code,
+        Task.department_code == target_dept,
         Task.task_id.notin_(assigned_task_ids),
     ).count()
 
     dept_members = db.query(User).filter(
-        User.department_code == current_user.department_code
+        User.department_code == target_dept
     ).all()
 
     assigned_user_ids = {
         row.user_id for row in db.query(TaskAssignee.user_id).join(
             Task, TaskAssignee.task_id == Task.task_id
         ).filter(
-            Task.department_code == current_user.department_code
+            Task.department_code == target_dept
         ).all()
     }
 
