@@ -1,5 +1,5 @@
 import boto3
-from botocore.exceptions import NoCredentialsError
+from botocore.exceptions import NoCredentialsError, ClientError
 from fastapi import UploadFile, HTTPException, status
 import uuid
 
@@ -13,12 +13,12 @@ s3_client = boto3.client(
     region_name=settings.AWS_S3_REGION
 )
 
-def upload_file_to_s3(file: UploadFile) -> str:
+def upload_file_to_s3(file: UploadFile, path_prefix: str = "attachments") -> str:
     """
     S3에 파일을 업로드하고 파일 URL을 반환합니다.
     """
     # 파일 이름이 중복되지 않도록 UUID를 사용하여 고유한 파일 키 생성
-    file_key = f"petitions/{uuid.uuid4()}-{file.filename}"
+    file_key = f"{path_prefix}/{uuid.uuid4()}-{file.filename}"
 
     try:
         s3_client.upload_fileobj(

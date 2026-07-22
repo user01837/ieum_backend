@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, status, HTTPException
+from fastapi import APIRouter, Depends, status, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 from app.db.session import get_db
 from app.models.user import User
@@ -41,7 +41,7 @@ def get_my_tasks(
     return [MyTaskResponse(taskId=task.task_id, name=task.name) for task in my_tasks]
 
 # 부서관리 페이지
-# API 1: 내 부서 Task 목록 조회
+# API 1: Task 목록 조회 (일반: 본인 부서 / 관리자: 선택 부서)
 class AssigneeItem(BaseModel):
     userId: int
     name: str
@@ -54,14 +54,22 @@ class TaskListItem(BaseModel):
 @router.get(
     "",
     response_model=List[TaskListItem],
-    summary="내 부서 Task 목록 조회",
+    summary="Task 목록 조회",
 )
 def get_department_tasks(
+    department_code: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    is_admin = current_user.system_role_code == "02"
+
+    if is_admin and department_code:
+        target_dept = department_code
+    else:
+        target_dept = current_user.department_code
+
     tasks = db.query(Task).filter(
-        Task.department_code == current_user.department_code
+        Task.department_code == target_dept
     ).all()
 
     result = []
@@ -92,7 +100,7 @@ class TaskCreateResponse(BaseModel):
     taskId: int
     name: str
 
-# API 2번: 새 Task 생성
+# API 2: Task 생성 (일반: 본인 부서 / 관리자: 선택 부서)
 @router.post(
     "",
     response_model=TaskCreateResponse,
@@ -101,12 +109,20 @@ class TaskCreateResponse(BaseModel):
 )
 def create_task(
     body: TaskCreateRequest,
+    department_code: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    is_admin = current_user.system_role_code == "02"
+
+    if is_admin and department_code:
+        target_dept = department_code
+    else:
+        target_dept = current_user.department_code
+
     task = Task(
         name=body.name,
-        department_code=current_user.department_code,
+        department_code=target_dept,
     )
     db.add(task)
     db.commit()

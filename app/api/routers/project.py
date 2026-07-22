@@ -1,12 +1,25 @@
 from datetime import datetime, timezone, date
 from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
 import math
 import io
 import urllib.parse
+import os
+
+import httpx
+from dotenv import load_dotenv
+from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from docx import Document as DocxDocument
+from docx.oxml.ns import qn
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from hwpx.document import HwpxDocument
+from bs4 import BeautifulSoup
 
 from app.db.session import get_db
 from app.models.project import Project
@@ -15,15 +28,10 @@ from app.models.user import User
 from app.models.department import Department
 from app.api.routers.auth import get_current_user
 
-from docx import Document as DocxDocument
-from docx.oxml.ns import qn
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 pdfmetrics.registerFont(TTFont('MalgunGothic', 'C:/Windows/Fonts/malgun.ttf'))
-from hwpx.document import HwpxDocument
-from bs4 import BeautifulSoup
+
+load_dotenv()
+AI_SERVER = os.getenv("AI_SERVER")
 
 router = APIRouter()
 
@@ -62,6 +70,15 @@ class ProjectUpdateRequest(BaseModel):
     deadline: Optional[str] = None
     overview: Optional[str] = None
     reportContent: Optional[str] = None
+    secOverview: Optional[str] = None
+    secBackground: Optional[str] = None
+    secGoals: Optional[str] = None
+    secDetailedPlan: Optional[str] = None
+    secSchedule: Optional[str] = None
+    secExecutionSystem: Optional[str] = None
+    secBudget: Optional[str] = None
+    secExpectedEffect: Optional[str] = None
+    secPostManagement: Optional[str] = None
     memberUserIds: List[int]
 
 class MemberItem(BaseModel):
@@ -98,13 +115,25 @@ class ProjectDetailResponse(BaseModel):
     businessContent: Optional[str]
     overview: Optional[str]
     reportContent: Optional[str]
+    secOverview: Optional[str]
+    secBackground: Optional[str]
+    secGoals: Optional[str]
+    secDetailedPlan: Optional[str]
+    secSchedule: Optional[str]
+    secExecutionSystem: Optional[str]
+    secBudget: Optional[str]
+    secExpectedEffect: Optional[str]
+    secPostManagement: Optional[str]
     approvedAt: Optional[str]
     createdAt: str
     members: List[MemberItem]
 
 class AiDraftResponse(BaseModel):
-    overview: str
-    reportContent: str
+    draft: dict
+    referenced_tasks: list = []
+    guardrail_triggered: bool = False
+    needs_review: bool = False
+    unverified_claims: dict = {}
 
 # ----------------------------------------------------------------
 # 유틸
@@ -155,6 +184,15 @@ def build_detail_response(project: Project, db: Session) -> ProjectDetailRespons
         businessContent=project.business_content,
         overview=project.overview,
         reportContent=project.report_content,
+        secOverview=project.sec_overview,
+        secBackground=project.sec_background,
+        secGoals=project.sec_goals,
+        secDetailedPlan=project.sec_detailed_plan,
+        secSchedule=project.sec_schedule,
+        secExecutionSystem=project.sec_execution_system,
+        secBudget=project.sec_budget,
+        secExpectedEffect=project.sec_expected_effect,
+        secPostManagement=project.sec_post_management,
         approvedAt=datetime_to_str(project.approved_at),
         createdAt=datetime_to_str(project.created_at),
         members=members,
@@ -175,10 +213,16 @@ def get_project_list(
     stage: Optional[str] = Query(None),
     page: int = Query(0, ge=0),
     size: int = Query(10, ge=1),
+    keyword: Optional[str] = Query(None),
+    department_code: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if scope == "MY":
+    # 관리자는 전체 프로젝트 조회
+    if current_user.system_role_code == "02":
+        query = db.query(Project)
+
+    elif scope == "MY":
         project_ids = db.query(ProjectMember.project_id).filter(
             ProjectMember.user_id == current_user.user_id,
             ProjectMember.role_code == "01",
@@ -209,6 +253,12 @@ def get_project_list(
 
     if stage:
         query = query.filter(Project.stage_code == stage)
+    
+    if keyword:
+        query = query.filter(Project.name.like(f"%{keyword}%"))
+
+    if department_code:  # ← 추가
+        query = query.filter(Project.department_code == department_code)
 
     total_elements = query.count()
     total_pages = math.ceil(total_elements / size)
@@ -223,7 +273,7 @@ def get_project_list(
             startDate=date_to_str(p.start_date),
             deadline=date_to_str(p.deadline),
             createdAt=datetime_to_str(p.created_at),
-            roleType=scope,
+            roleType="ADMIN" if current_user.system_role_code == "02" else scope,  # ← 수정
         )
         for p in items
     ]
@@ -333,6 +383,24 @@ def update_project(
         project.overview = body.overview
     if body.reportContent is not None:
         project.report_content = body.reportContent
+    if body.secOverview is not None:
+        project.sec_overview = body.secOverview
+    if body.secBackground is not None:
+        project.sec_background = body.secBackground
+    if body.secGoals is not None:
+        project.sec_goals = body.secGoals
+    if body.secDetailedPlan is not None:
+        project.sec_detailed_plan = body.secDetailedPlan
+    if body.secSchedule is not None:
+        project.sec_schedule = body.secSchedule
+    if body.secExecutionSystem is not None:
+        project.sec_execution_system = body.secExecutionSystem
+    if body.secBudget is not None:
+        project.sec_budget = body.secBudget
+    if body.secExpectedEffect is not None:
+        project.sec_expected_effect = body.secExpectedEffect
+    if body.secPostManagement is not None:
+        project.sec_post_management = body.secPostManagement
 
     existing_members = db.query(ProjectMember).filter(
         ProjectMember.project_id == projectId
@@ -365,6 +433,34 @@ def update_project(
 
     return build_detail_response(project, db)
 
+# AI 서버 색인 등록 (백그라운드 실행용) - 승인완료 시 호출
+def _call_index_task(project: Project):
+    try:
+        httpx.post(
+            f"{AI_SERVER}/api/index-task",
+            json={
+                "task_id": project.project_id,
+                "year": project.approved_at.year,
+                "title": project.name,
+                "lead_department_code": project.department_code or "01",
+                "collab_department_codes": [],
+                "domain_code": "",
+                "overview": project.sec_overview or "",
+                "background": project.sec_background or "",
+                "goals": project.sec_goals or "",
+                "detailed_plan": project.sec_detailed_plan or "",
+                "schedule": project.sec_schedule or "",
+                "execution_system": project.sec_execution_system or "",
+                "budget": project.sec_budget or "",
+                "expected_effect": project.sec_expected_effect or "",
+                "post_management": project.sec_post_management or "",
+                "status_code": "완료",
+            },
+            timeout=180.0,
+        )
+    except Exception:
+        pass
+
 
 # 5. 기획서 승인완료
 @router.post(
@@ -374,6 +470,7 @@ def update_project(
 )
 def approve_project(
     projectId: int,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -388,6 +485,9 @@ def approve_project(
     project.approved_at = datetime.now(timezone.utc)
     db.commit()
 
+    background_tasks.add_task(_call_index_task, project)
+
+    return {"message": "승인완료 처리되었습니다."}
 
 # 6. 프로젝트 삭제
 @router.delete(
@@ -419,7 +519,7 @@ def delete_project(
 
 
 # 7. AI 기획서 초안 생성
-@router.get(
+@router.post(
     "/{projectId}/ai-draft",
     response_model=AiDraftResponse,
     summary="AI 기획서 초안 생성",
@@ -433,11 +533,35 @@ def get_ai_draft(
     if not project:
         raise HTTPException(status_code=404, detail="존재하지 않는 프로젝트입니다.")
 
-    return AiDraftResponse(
-        overview="",
-        reportContent="",
-    )
+    VALID_DEPT_CODES = {"01","02","03","04","05","06","07","08"}
+    dept_code = project.department_code if project.department_code in VALID_DEPT_CODES else "01"
 
+    try:
+        res = httpx.post(
+            f"{AI_SERVER}/api/task-draft",
+            json={
+                "title": project.name,
+                "overview": project.overview or project.business_content or "",
+                "lead_department_code": dept_code,
+            },
+            timeout=280.0,
+        )
+        res.raise_for_status()
+        data = res.json()
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="AI 서버 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"AI 서버 오류: {e.response.status_code}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AI 서버 연결 오류: {str(e)}")
+
+    return AiDraftResponse(
+        draft=data.get("draft", {}),
+        referenced_tasks=data.get("referenced_tasks", []),
+        guardrail_triggered=data.get("guardrail_triggered", False),
+        needs_review=data.get("needs_review", False),
+        unverified_claims=data.get("unverified_claims", {}),
+    )
 
 # 8. 기획서 내보내기
 @router.get(
@@ -454,43 +578,66 @@ def export_project(
     if not project:
         raise HTTPException(status_code=404, detail="존재하지 않는 프로젝트입니다.")
 
-    report_text = ""
-    if project.report_content:
-        soup = BeautifulSoup(project.report_content, "html.parser")
-        report_text = soup.get_text(separator="\n")
-
     title = project.name or "기획서"
 
+    # 9개 섹션 정의
+    SECTIONS = [
+        ("Ⅰ. 사업 개요",           project.sec_overview),
+        ("Ⅱ. 추진 배경 및 필요성",  project.sec_background),
+        ("Ⅲ. 사업 목표",           project.sec_goals),
+        ("Ⅳ. 세부 추진 계획",       project.sec_detailed_plan),
+        ("Ⅴ. 추진 일정",           project.sec_schedule),
+        ("Ⅵ. 사업 추진 체계",       project.sec_execution_system),
+        ("Ⅶ. 예산 계획",           project.sec_budget),
+        ("Ⅷ. 기대 효과",           project.sec_expected_effect),
+        ("Ⅸ. 사후 관리 계획",       project.sec_post_management),
+    ]
+
+    def html_to_text(html: str) -> str:
+            if not html:
+                return ""
+            soup = BeautifulSoup(html, "html.parser")
+            for tag in soup.find_all("h2"):
+                tag.decompose()
+            for br in soup.find_all("br"):
+                br.replace_with("\n")
+            lines = []
+            for elem in soup.find_all(["h3", "p"]):
+                text = elem.decode_contents()
+                text = text.replace("&nbsp;", " ").replace("\xa0", " ")
+                inner_soup = BeautifulSoup(text, "html.parser")
+                text = inner_soup.get_text(strip=False).rstrip()
+                if text.strip():
+                    lines.append(text)
+                else:
+                    lines.append("")
+            return "\n".join(lines)
+
+    # ── DOCX ──────────────────────────────────────────────
     if format == "docx":
         doc = DocxDocument()
         style = doc.styles['Normal']
         style.font.name = '맑은 고딕'
         style.element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
 
-        heading = doc.add_heading(title, level=1)
-        for run in heading.runs:
-            run.font.name = '맑은 고딕'
-            run._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
-
-        if project.business_content:
-            h = doc.add_heading("사업 개요", level=2)
+        def add_heading(text, level):
+            h = doc.add_heading(text, level=level)
             for run in h.runs:
                 run.font.name = '맑은 고딕'
                 run._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
-            p = doc.add_paragraph(project.business_content)
+
+        def add_paragraph(text):
+            p = doc.add_paragraph(text)
             for run in p.runs:
                 run.font.name = '맑은 고딕'
                 run._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
 
-        if report_text:
-            h = doc.add_heading("기획서 본문", level=2)
-            for run in h.runs:
-                run.font.name = '맑은 고딕'
-                run._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
-            p = doc.add_paragraph(report_text)
-            for run in p.runs:
-                run.font.name = '맑은 고딕'
-                run._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
+        add_heading(title, level=1)
+
+        for sec_title, sec_content in SECTIONS:
+            if sec_content:
+                add_heading(sec_title, level=2)
+                add_paragraph(html_to_text(sec_content))
 
         buf = io.BytesIO()
         doc.save(buf)
@@ -501,30 +648,48 @@ def export_project(
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(title)}.docx"}
         )
 
+    # ── PDF ───────────────────────────────────────────────
     elif format == "pdf":
         buf = io.BytesIO()
         c = canvas.Canvas(buf, pagesize=A4)
         width, height = A4
+
+        def new_page_if_needed(y, needed=30):
+            if y < needed:
+                c.showPage()
+                return height - 50
+            return y
+
+        # 제목
         c.setFont("MalgunGothic", 16)
         c.drawString(50, height - 50, title)
-        c.setFont("MalgunGothic", 11)
         y = height - 90
-        if project.business_content:
-            c.drawString(50, y, "사업 개요")
-            y -= 20
-            for line in project.business_content.split("\n"):
-                c.drawString(60, y, line)
-                y -= 15
-        if report_text:
-            y -= 10
-            c.drawString(50, y, "기획서 본문")
-            y -= 20
-            for line in report_text.split("\n"):
-                if y < 50:
-                    c.showPage()
-                    y = height - 50
-                c.drawString(60, y, line)
-                y -= 15
+
+        for sec_title, sec_content in SECTIONS:
+            if not sec_content:
+                continue
+            # 섹션 제목
+            y = new_page_if_needed(y, 60)
+            c.setFont("MalgunGothic", 13)
+            c.drawString(50, y, sec_title)
+            y -= 25
+
+            # 섹션 내용
+            c.setFont("MalgunGothic", 11)
+            for line in html_to_text(sec_content).split("\n"):
+                line = line.strip()
+                if not line:
+                    y -= 8
+                    continue
+                # 긴 줄 줄바꿈
+                while len(line) > 0:
+                    y = new_page_if_needed(y)
+                    c.drawString(60, y, line[:55])
+                    line = line[55:]
+                    y -= 16
+
+            y -= 12  # 섹션 간격
+
         c.save()
         buf.seek(0)
         return StreamingResponse(
@@ -533,15 +698,16 @@ def export_project(
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(title)}.pdf"}
         )
 
+    # ── HWPX ──────────────────────────────────────────────
     elif format == "hwpx":
         doc = HwpxDocument.new()
         doc.add_paragraph(title)
-        if project.business_content:
-            doc.add_paragraph("사업 개요")
-            doc.add_paragraph(project.business_content)
-        if report_text:
-            doc.add_paragraph("기획서 본문")
-            doc.add_paragraph(report_text)
+
+        for sec_title, sec_content in SECTIONS:
+            if sec_content:
+                doc.add_paragraph(sec_title)
+                doc.add_paragraph(html_to_text(sec_content))
+
         buf = io.BytesIO()
         doc.save_to_stream(buf)
         buf.seek(0)
