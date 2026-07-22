@@ -159,6 +159,9 @@ def get_knowledge_list(
         Department, Knowledge.department_code == Department.department_code
     )
 
+    # 삭제되지 않은 항목만 조회
+    query = query.filter(Knowledge.is_deleted == 0)
+
     # --- 필터링 ---
     is_admin = current_user.system_role_code == '02'
 
@@ -295,7 +298,10 @@ def get_knowledge_detail(
         Creator, Knowledge.created_by == Creator.user_id
     ).outerjoin(
         Updater, Knowledge.updated_by == Updater.user_id
-    ).filter(Knowledge.knowledge_id == knowledge_id).first()
+    ).filter(
+        Knowledge.knowledge_id == knowledge_id,
+        Knowledge.is_deleted == 0
+    ).first()
 
     if not knowledge_query_result:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="존재하지 않는 지식 카드입니다.")
@@ -303,10 +309,12 @@ def get_knowledge_detail(
     knowledge, task_name, created_by_name, updated_by_name = knowledge_query_result
 
     # 3. 접근 권한 확인
+    is_admin = current_user.system_role_code == '02'
     is_public = knowledge.scope_code == '02'
     is_in_my_dept = (knowledge.scope_code == '01' and knowledge.department_code == current_user.department_code)
 
-    if not (is_public or is_in_my_dept):
+    # 관리자가 아니면서, 공개된 글도 아니고, 내 부서 글도 아니면 접근 불가
+    if not (is_admin or is_public or is_in_my_dept):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="이 지식 카드에 접근할 권한이 없습니다.")
 
     # 4. 첨부파일 목록 조회
@@ -594,7 +602,10 @@ def update_knowledge(
     - **multipart/form-data** 형식으로 요청해야 합니다.
     """
     # 1. 수정할 지식 카드 조회 (동시 수정을 방지하기 위해 비관적 잠금 사용)
-    knowledge_to_update = db.query(Knowledge).filter(Knowledge.knowledge_id == knowledge_id).with_for_update().first()
+    knowledge_to_update = db.query(Knowledge).filter(
+        Knowledge.knowledge_id == knowledge_id,
+        Knowledge.is_deleted == 0
+    ).with_for_update().first()
     if not knowledge_to_update:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="수정할 지식 카드를 찾을 수 없습니다.")
 
@@ -639,3 +650,37 @@ def update_knowledge(
     db.commit()
 
     return KnowledgeUpdateResponse(knowledge_id=knowledge_id, message="지식 카드가 성공적으로 수정되었습니다.")
+
+@router.delete(
+    "/{knowledge_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="지식 베이스 항목 삭제"
+)
+def delete_knowledge(
+    knowledge_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    기존 지식 베이스 항목을 삭제(소프트 삭제)합니다.
+    - 관리자 또는 해당 지식베이스가 속한 부서의 부서원만 삭제할 수 있습니다.
+    """
+    # 1. 삭제할 지식 카드 조회
+    knowledge_to_delete = db.query(Knowledge).filter(
+        Knowledge.knowledge_id == knowledge_id,
+        Knowledge.is_deleted == 0
+    ).first()
+
+    if not knowledge_to_delete:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="삭제할 지식 카드를 찾을 수 없거나 이미 삭제되었습니다.")
+
+    # 2. 삭제 권한 확인 (관리자 또는 해당 부서원만 가능)
+    is_admin = current_user.system_role_code == '02'
+    is_department_member = knowledge_to_delete.department_code == current_user.department_code
+    if not (is_admin or is_department_member):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="이 지식 카드를 삭제할 권한이 없습니다.")
+
+    # 3. 소프트 삭제 처리
+    knowledge_to_delete.is_deleted = True
+    knowledge_to_delete.deleted_at = func.now()
+    db.commit()

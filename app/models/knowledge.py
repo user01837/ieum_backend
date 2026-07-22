@@ -17,6 +17,8 @@ class Knowledge(Base):
     updated_by = Column(String(50), ForeignKey("user.user_id"), nullable=True)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+    is_deleted = Column(Boolean, default=False, nullable=False)
+    deleted_at = Column(DateTime, nullable=True)
 
     # Relationships
     logs = relationship("KnowledgeLog", back_populates="knowledge", cascade="all, delete-orphan")
