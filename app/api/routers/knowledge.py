@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException, status
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 from sqlalchemy import func, or_, and_
 from typing import List, Optional
 
@@ -8,7 +8,7 @@ from app.db.session import get_db
 from app.api.routers.auth import get_current_user
 from app.models.user import User
 from app.models.task import Task
-from app.models.knowledge import Knowledge, KnowledgeLog
+from app.models.knowledge import Knowledge, KnowledgeLog, KnowledgeLogTag, KnowledgeTag
 from app.models.department import Department
 
 # --- 상수 ---
@@ -46,6 +46,39 @@ class KnowledgeListResponse(BaseModel):
     page: int
     size: int
     items: List[KnowledgeListItem]
+
+class TagDetail(BaseModel):
+    tag_id: int
+    name: str
+
+class LogDetail(BaseModel):
+    log_id: int
+    user_id: Optional[str]
+    user_name: Optional[str]
+    content: Optional[str]
+    tags: List[TagDetail]
+    is_deleted: bool
+    created_at: Optional[str]
+    updated_at: Optional[str]
+
+class KnowledgeDetailResponse(BaseModel):
+    knowledge_id: int
+    task_id: Optional[int]
+    task_name: Optional[str]
+    department_code: Optional[str]
+    title: str
+    category_code: Optional[str]
+    category_name: Optional[str]
+    summary: Optional[str]
+    warning_note: Optional[str]
+    scope_code: Optional[str]
+    scope_name: Optional[str]
+    created_by: Optional[str]
+    created_by_name: Optional[str]
+    updated_by_name: Optional[str]
+    created_at: Optional[str]
+    updated_at: Optional[str]
+    logs: List[LogDetail]
 
 # --- 라우터 ---
 router = APIRouter()
@@ -143,4 +176,109 @@ def get_knowledge_list(
         page=page,
         size=size,
         items=items,
+    )
+
+@router.get(
+    "/{knowledge_id}",
+    response_model=KnowledgeDetailResponse,
+    summary="지식 카드 상세 조회",
+)
+def get_knowledge_detail(
+    knowledge_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # 1. 작성자, 수정자 이름 조회를 위해 User 모델에 별칭 부여
+    Creator = aliased(User, name='creator')
+    Updater = aliased(User, name='updater')
+
+    # 2. 지식 기본 정보 조회
+    knowledge_query_result = db.query(
+        Knowledge,
+        Task.name.label("task_name"),
+        Creator.name.label("created_by_name"),
+        Updater.name.label("updated_by_name")
+    ).outerjoin(
+        Task, Knowledge.task_id == Task.task_id
+    ).outerjoin(
+        Creator, Knowledge.created_by == Creator.user_id
+    ).outerjoin(
+        Updater, Knowledge.updated_by == Updater.user_id
+    ).filter(Knowledge.knowledge_id == knowledge_id).first()
+
+    if not knowledge_query_result:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="존재하지 않는 지식 카드입니다.")
+
+    knowledge, task_name, created_by_name, updated_by_name = knowledge_query_result
+
+    # 3. 접근 권한 확인
+    is_public = knowledge.scope_code == '02'
+    is_in_my_dept = (knowledge.scope_code == '01' and knowledge.department_code == current_user.department_code)
+
+    if not (is_public or is_in_my_dept):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="이 지식 카드에 접근할 권한이 없습니다.")
+
+    # 4. 로그 및 관련 정보 조회 (N+1 방지)
+    logs_from_db = db.query(KnowledgeLog).filter(
+        KnowledgeLog.knowledge_id == knowledge_id,
+        KnowledgeLog.is_deleted == 0
+    ).order_by(KnowledgeLog.created_at.asc()).all()
+
+    log_ids = [log.log_id for log in logs_from_db]
+    user_ids_from_logs = {log.user_id for log in logs_from_db if log.user_id}
+
+    # 4-1. 로그에 연결된 태그 일괄 조회
+    tags_map = {}
+    if log_ids:
+        tag_results = db.query(
+            KnowledgeLogTag.log_id,
+            KnowledgeTag.tag_id,
+            KnowledgeTag.name
+        ).join(
+            KnowledgeTag, KnowledgeLogTag.tag_id == KnowledgeTag.tag_id
+        ).filter(KnowledgeLogTag.log_id.in_(log_ids)).all()
+
+        for log_id, tag_id, tag_name in tag_results:
+            if log_id not in tags_map:
+                tags_map[log_id] = []
+            tags_map[log_id].append(TagDetail(tag_id=tag_id, name=tag_name))
+
+    # 4-2. 로그 작성자 이름 일괄 조회
+    log_user_name_map = {}
+    if user_ids_from_logs:
+        users_from_logs = db.query(User.user_id, User.name).filter(User.user_id.in_(list(user_ids_from_logs))).all()
+        log_user_name_map = {user_id: name for user_id, name in users_from_logs}
+
+    # 5. 최종 응답 데이터 구성
+    log_details = []
+    for log in logs_from_db:
+        log_details.append(LogDetail(
+            log_id=log.log_id,
+            user_id=str(log.user_id) if log.user_id is not None else None,
+            user_name=log_user_name_map.get(str(log.user_id)) if log.user_id is not None else None,
+            content=log.content,
+            tags=tags_map.get(log.log_id, []),
+            is_deleted=bool(log.is_deleted),
+            created_at=log.created_at.isoformat() if log.created_at else None,
+            updated_at=log.updated_at.isoformat() if log.updated_at else None,
+        ))
+
+    return KnowledgeDetailResponse(
+        knowledge_id=knowledge.knowledge_id,
+        task_id=knowledge.task_id,
+        task_name=task_name,
+        department_code=knowledge.department_code,
+        title=knowledge.title,
+        category_code=knowledge.category_code,
+        category_name=CATEGORY_NAME_MAP.get(knowledge.category_code),
+        summary=knowledge.summary,
+        warning_note=knowledge.warning_note,
+        scope_code=knowledge.scope_code,
+        scope_name=SCOPE_NAME_MAP.get(knowledge.scope_code),
+        created_by=str(knowledge.created_by) if knowledge.created_by is not None else None,
+        created_by_name=created_by_name,
+        updated_by_name=updated_by_name,
+        created_at=knowledge.created_at.isoformat() if knowledge.created_at else None,
+        updated_at=knowledge.updated_at.isoformat() if knowledge.updated_at else None,
+        logs=log_details
     )
