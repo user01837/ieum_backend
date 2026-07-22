@@ -313,8 +313,7 @@ def get_petition_detail(
             attachmentId=att.attachment_id,
             fileName=att.file_name,
             fileUrl=att.file_url,
-            isStaffUpload=att.is_staff_upload,
-        ) for att in attachments_from_db
+            isStaffUpload=att.is_staff_upload) for att in attachments_from_db
     ]
 
 
@@ -410,7 +409,7 @@ def temp_save_petition(
     if files:
         for file in files:
             # S3에 파일 업로드
-            file_url = upload_file_to_s3(file)
+            file_url = upload_file_to_s3(file, path_prefix="petitions")
 
             # DB에 첨부파일 정보 저장
             new_attachment = PetitionAttachment(
@@ -486,7 +485,7 @@ def answer_petition(
     if files:
         for file in files:
             # S3에 파일 업로드
-            file_url = upload_file_to_s3(file)
+            file_url = upload_file_to_s3(file, path_prefix="petitions")
 
             # DB에 첨부파일 정보 저장
             new_attachment = PetitionAttachment(

@@ -21,5 +21,5 @@ def upload_file(file: UploadFile = File(...)):
     """
     파일을 S3에 업로드하고, 업로드된 파일의 이름과 URL을 반환합니다.
     """
-    file_url = upload_file_to_s3(file)
+    file_url = upload_file_to_s3(file, path_prefix="general")
     return UploadResponse(fileName=file.filename, fileUrl=file_url)
