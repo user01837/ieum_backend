@@ -173,7 +173,9 @@ def get_petitions(
             if not current_user.predecessor_user_id:
                 # 전임자가 없는 경우 빈 목록을 반환
                 return PaginatedPetitionResponse(content=[], totalElements=0, totalPages=0, page=page, size=size)
-            query = query.filter(Petition.assignee_user_id == current_user.predecessor_user_id)
+            query = query.filter(Petition.assignee_user_id == current_user.predecessor_user_id)    
+        elif scope.upper() == "ALL":
+            query = query.filter(Petition.department_code == current_user.department_code)
         # scope == "ALL"은 별도 필터링 없음
 
         # 보안/개인정보 보호 규칙 적용:

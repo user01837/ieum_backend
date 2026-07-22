@@ -129,6 +129,7 @@ def get_knowledge_list(
     task_id: Optional[int] = Query(None),
     category_code: Optional[str] = Query(None),
     scope_code: Optional[str] = Query(None),
+    department_code: Optional[str] = Query(None, description="부서 코드 필터 (관리자용)"),
     keyword: Optional[str] = Query(None),
     page: int = Query(0, description="페이지 번호 (0부터 시작)", ge=0),
     size: int = Query(10, description="페이지당 건수", ge=1),
@@ -159,24 +160,31 @@ def get_knowledge_list(
     )
 
     # --- 필터링 ---
-    # 1. 공개 범위 필터
-    if scope_code == "01":  # '내 부서' 필터
-        query = query.filter(
-            Knowledge.department_code == current_user.department_code
-        )
-    elif scope_code == "02":  # '전체 공개' 필터
-        query = query.filter(Knowledge.scope_code == "02")
-    else:  # 기본 조회 (필터 미선택 시)
-        # 사용자는 '전체 부서' 공개 항목과 자신의 부서에 '내 부서'로 공개된 항목을 모두 볼 수 있습니다.
-        query = query.filter(
-            or_(
-                Knowledge.scope_code == '02',  # 전체 부서
-                and_(
-                    Knowledge.scope_code == '01',  # 내 부서
-                    Knowledge.department_code == current_user.department_code
-                ),
+    is_admin = current_user.system_role_code == '02'
+
+    if is_admin:
+        # 관리자는 부서 코드가 주어지면 해당 부서로 필터링합니다.
+        if department_code:
+            query = query.filter(Knowledge.department_code == department_code)
+    else:
+        # 일반 사용자의 공개 범위 필터
+        if scope_code == "01":  # '내 부서' 필터
+            query = query.filter(
+                Knowledge.department_code == current_user.department_code
             )
-        )
+        elif scope_code == "02":  # '전체 공개' 필터
+            query = query.filter(Knowledge.scope_code == "02")
+        else:  # 기본 조회 (필터 미선택 시)
+            # 사용자는 '전체 부서' 공개 항목과 자신의 부서에 '내 부서'로 공개된 항목을 모두 볼 수 있습니다.
+            query = query.filter(
+                or_(
+                    Knowledge.scope_code == '02',  # 전체 부서
+                    and_(
+                        Knowledge.scope_code == '01',  # 내 부서
+                        Knowledge.department_code == current_user.department_code
+                    ),
+                )
+            )
 
     # 2. 쿼리 파라미터를 이용한 추가 필터
     if task_id:
@@ -604,6 +612,10 @@ def update_knowledge(
     for key, value in update_data.items():
         if value is not None:
             setattr(knowledge_to_update, key, value)
+
+    # '내 부서'로 변경 시, 부서 코드도 현재 사용자의 부서로 업데이트
+    if scope_code == '01':
+        knowledge_to_update.department_code = current_user.department_code
 
     # 4. 첨부파일 삭제 처리 (소프트 삭제)
     if deleted_attachment_ids:
