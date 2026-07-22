@@ -32,6 +32,8 @@ POSITION_MAP = {
     "03": "주무관",
 }
 
+VALID_DEPARTMENT_CODES = {"01", "02", "03", "04", "05", "06", "07", "08"}
+
 # --- Pydantic 스키마 ---
 
 class PetitionContent(BaseModel):
@@ -157,6 +159,10 @@ def create_external_petition(
         department_code = response.json()["department_code"]
     except Exception as e:
         print(f"WARN: 부서 자동분류 실패, 기본 부서(08)로 접수: {e}")
+
+    if department_code not in VALID_DEPARTMENT_CODES:
+        print(f"WARN: ieum_ai가 유효하지 않은 department_code를 반환함({department_code!r}), 기본 부서(08)로 접수")
+        department_code = "08"
 
     petition = Petition(
         title=req.title,
