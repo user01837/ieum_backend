@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     # 디폴트 비밀번호
     DEFAULT_PASSWORD: str
 
+    EXTERNAL_PETITION_API_KEY: str
+
 
 
     model_config = SettingsConfigDict(

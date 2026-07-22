@@ -1,5 +1,5 @@
 import math
-from fastapi import APIRouter, Depends, Query, HTTPException, status, Form, File, UploadFile, BackgroundTasks
+from fastapi import APIRouter, Depends, Query, HTTPException, status, Form, File, UploadFile, BackgroundTasks, Header
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, case
 from datetime import datetime
@@ -84,6 +84,14 @@ class DeleteAttachmentResponse(BaseModel):
     message: str
     complaintId: int
 
+class ExternalPetitionRequest(BaseModel):
+    title: str
+    content: str
+
+class ExternalPetitionResponse(BaseModel):
+    petitionId: int
+    departmentCode: str
+
 # --- 라우터 ---
 
 router = APIRouter()
@@ -112,6 +120,59 @@ def _call_ai_to_index_petition(petition_data: dict):
         print(f"ERROR: AI server status error while indexing petition: {exc.response.status_code} - {exc.response.text}")
     except Exception as e:
         print(f"ERROR: An unexpected error occurred while indexing petition: {e}")
+
+@router.post(
+    "/external",
+    response_model=ExternalPetitionResponse,
+    summary="외부 시스템 민원 접수",
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {"description": "API 키 불일치/누락"},
+    }
+)
+def create_external_petition(
+    req: ExternalPetitionRequest,
+    x_api_key: str = Header(..., alias="X-API-Key"),
+    db: Session = Depends(get_db),
+):
+    """
+    국민신문고/정부24 같은 외부 민원 채널이 새 민원을 접수할 때 호출하는 엔드포인트.
+    내부 직원용 JWT(get_current_user)가 아니라 API 키로 인증한다.
+
+    ieum_ai의 /api/classify-department로 부서를 자동 분류한다. 분류가 실패해도
+    (AI 서버 다운, 타임아웃 등) 민원 접수 자체는 막지 않고 기본 부서(08 행정·일반)로
+    접수한다 - 담당자는 이후 temp-save에서 담당자/부서를 재배정할 수 있다.
+    """
+    if x_api_key != settings.EXTERNAL_PETITION_API_KEY:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="유효하지 않은 API 키입니다.")
+
+    department_code = "08"
+    try:
+        classify_url = f"{settings.AI_SERVER.rstrip('/')}/api/classify-department"
+        response = httpx.post(
+            classify_url,
+            json={"title": req.title, "content": req.content},
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        department_code = response.json()["department_code"]
+    except Exception as e:
+        print(f"WARN: 부서 자동분류 실패, 기본 부서(08)로 접수: {e}")
+
+    petition = Petition(
+        title=req.title,
+        content=req.content,
+        department_code=department_code,
+        status_code="01",
+        received_at=datetime.now(),
+    )
+    db.add(petition)
+    db.commit()
+    db.refresh(petition)
+
+    return ExternalPetitionResponse(
+        petitionId=petition.petition_id,
+        departmentCode=department_code,
+    )
 
 @router.get(
     "/",
