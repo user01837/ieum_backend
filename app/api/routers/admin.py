@@ -283,6 +283,24 @@ def update_user(
             detail="수정할 정보가 없습니다."
         )
 
+    # 부서 변경을 가장 먼저 처리하여 업무 담당을 초기화합니다.
+    if "departmentCode" in update_data and request.departmentCode:
+        if user_to_update.department_code != request.departmentCode:
+            # 부서가 변경되었으므로, 기존 담당 업무를 모두 초기화합니다.
+            db.query(TaskAssignee).filter(TaskAssignee.user_id == userId).delete(synchronize_session=False)
+
+            # 부서 이동 시, 기존 전임자가 새 부서 소속이 아니면 전임자 관계를 해제합니다.
+            if user_to_update.predecessor_user_id:
+                predecessor = db.query(User).filter(User.user_id == user_to_update.predecessor_user_id).first()
+                if predecessor and predecessor.department_code != request.departmentCode:
+                    user_to_update.predecessor_user_id = None
+            
+            user_to_update.department_code = request.departmentCode
+            
+            # 시스템 역할 업데이트 (관리자 부서 '09' 여부)
+            user_to_update.system_role_code = '02' if request.departmentCode == '09' else '01'
+
+
     if "name" in update_data:
         user_to_update.name = request.name
 
@@ -300,14 +318,28 @@ def update_user(
         predecessor_id = request.predecessorUserId
         if predecessor_id and str(predecessor_id) == str(userId):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="자기 자신을 전임자로 지정할 수 없습니다.")
-        user_to_update.predecessor_user_id = predecessor_id
 
-    if "departmentCode" in update_data and request.departmentCode:
-        user_to_update.department_code = request.departmentCode
-        if request.departmentCode == '09':
-            user_to_update.system_role_code = '02'
-        elif user_to_update.system_role_code == '02':
-            user_to_update.system_role_code = '01'
+        # 전임자가 새로 지정되거나 변경될 때만 업무 승계 로직 실행
+        if predecessor_id and str(user_to_update.predecessor_user_id) != str(predecessor_id):
+            # 1. 전임자의 task_id 목록 조회
+            predecessor_task_ids = {
+                row.task_id for row in db.query(TaskAssignee.task_id).filter(TaskAssignee.user_id == str(predecessor_id)).all()
+            }
+
+            # 2. 후임자(현재 수정 대상 직원)의 task_id 목록 조회
+            successor_task_ids = {
+                row.task_id for row in db.query(TaskAssignee.task_id).filter(TaskAssignee.user_id == str(userId)).all()
+            }
+
+            # 3. 승계할 task_id 목록 계산 (전임자는 담당하고 있으나 후임자는 담당하고 있지 않은 업무)
+            tasks_to_inherit = predecessor_task_ids - successor_task_ids
+
+            # 4. 새로운 담당 업무 할당
+            for task_id in tasks_to_inherit:
+                new_assignment = TaskAssignee(user_id=str(userId), task_id=task_id)
+                db.add(new_assignment)
+
+        user_to_update.predecessor_user_id = predecessor_id
 
     # 4. 변경사항 저장
     db.commit()
