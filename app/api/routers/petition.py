@@ -1,7 +1,7 @@
 import math
 from fastapi import APIRouter, Depends, Query, HTTPException, status, Form, File, UploadFile, BackgroundTasks, Header
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, case
+from sqlalchemy import or_, case, func
 from datetime import datetime
 from pydantic import BaseModel
 from typing import List, Optional
@@ -164,10 +164,49 @@ def create_external_petition(
         print(f"WARN: ieum_ai가 유효하지 않은 department_code를 반환함({department_code!r}), 기본 부서(08)로 접수")
         department_code = "08"
 
+    task_id = None
+    try:
+        classify_task_url = f"{settings.AI_SERVER.rstrip('/')}/api/classify-task"
+        task_response = httpx.post(
+            classify_task_url,
+            json={
+                "complaint_text": f"{req.title}\n{req.content}",
+                "department_code": department_code,
+            },
+            timeout=60.0,
+        )
+        task_response.raise_for_status()
+        task_id = task_response.json().get("task_id")
+    except Exception as e:
+        print(f"WARN: 담당업무 자동분류 실패, 미배정으로 접수: {e}")
+
+    assignee_user_id = None
+    if task_id is not None:
+        candidate_ids = [
+            row.user_id for row in
+            db.query(TaskAssignee.user_id).filter(TaskAssignee.task_id == task_id).all()
+        ]
+        if candidate_ids:
+            open_counts = {uid: 0 for uid in candidate_ids}
+            counted = (
+                db.query(Petition.assignee_user_id, func.count(Petition.petition_id))
+                .filter(
+                    Petition.assignee_user_id.in_(candidate_ids),
+                    Petition.status_code != "03",
+                )
+                .group_by(Petition.assignee_user_id)
+                .all()
+            )
+            for uid, cnt in counted:
+                open_counts[uid] = cnt
+            assignee_user_id = min(open_counts, key=open_counts.get)
+
     petition = Petition(
         title=req.title,
         content=req.content,
         department_code=department_code,
+        task_id=task_id,
+        assignee_user_id=assignee_user_id,
         status_code="01",
         received_at=datetime.now(),
     )
