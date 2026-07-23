@@ -2,12 +2,14 @@ from fastapi import APIRouter, Depends, status, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
+import httpx
 
 from app.db.session import get_db
 from app.models.user import User
 from app.models.task import Task
 from app.api.routers.auth import get_current_user
 from app.models.task_assignee import TaskAssignee
+from app.core.config import settings
 
 router = APIRouter()
 
@@ -127,6 +129,22 @@ def create_task(
     db.add(task)
     db.commit()
     db.refresh(task)
+
+    try:
+        index_url = f"{settings.AI_SERVER.rstrip('/')}/api/index-task-category"
+        response = httpx.post(
+            index_url,
+            json={
+                "task_id": task.task_id,
+                "name": task.name,
+                "department_code": target_dept,
+                "description": task.name,
+            },
+            timeout=30.0,
+        )
+        response.raise_for_status()
+    except Exception as e:
+        print(f"WARN: task 색인 실패(task_id={task.task_id}): {e}")
 
     return TaskCreateResponse(taskId=task.task_id, name=task.name)
 
