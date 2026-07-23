@@ -180,6 +180,10 @@ def create_external_petition(
     except Exception as e:
         print(f"WARN: 담당업무 자동분류 실패, 미배정으로 접수: {e}")
 
+    if task_id is not None and db.query(Task.task_id).filter(Task.task_id == task_id).first() is None:
+        print(f"WARN: ieum_ai가 존재하지 않는 task_id를 반환함({task_id!r}), 미배정으로 접수")
+        task_id = None
+
     assignee_user_id = None
     if task_id is not None:
         candidate_ids = [
