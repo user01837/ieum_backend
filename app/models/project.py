@@ -23,6 +23,7 @@ class Project(Base):
     sec_budget            = Column(Text, nullable=True)
     sec_expected_effect   = Column(Text, nullable=True)
     sec_post_management   = Column(Text, nullable=True)
+    cover_title           = Column(String(200), nullable=True)
     approved_at           = Column(DateTime, nullable=True)
     created_at            = Column(DateTime, nullable=False, server_default=func.now())
     updated_at            = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())

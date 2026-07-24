@@ -28,9 +28,12 @@ from app.models.user import User
 from app.models.department import Department
 from app.api.routers.auth import get_current_user
 
-pdfmetrics.registerFont(TTFont('MalgunGothic', 'C:/Windows/Fonts/malgun.ttf'))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+FONT_DIR = os.path.join(BASE_DIR, "fonts")
+pdfmetrics.registerFont(TTFont('MalgunGothic', os.path.join(FONT_DIR, 'malgun.ttf')))
+pdfmetrics.registerFont(TTFont('MalgunGothicBold', os.path.join(FONT_DIR, 'malgunbd.ttf')))
 
-load_dotenv()
+load_dotenv(".env.local")
 AI_SERVER = os.getenv("AI_SERVER")
 
 router = APIRouter()
@@ -79,6 +82,7 @@ class ProjectUpdateRequest(BaseModel):
     secBudget: Optional[str] = None
     secExpectedEffect: Optional[str] = None
     secPostManagement: Optional[str] = None
+    coverTitle: Optional[str] = None
     memberUserIds: List[int]
 
 class MemberItem(BaseModel):
@@ -124,6 +128,7 @@ class ProjectDetailResponse(BaseModel):
     secBudget: Optional[str]
     secExpectedEffect: Optional[str]
     secPostManagement: Optional[str]
+    coverTitle: Optional[str]
     approvedAt: Optional[str]
     createdAt: str
     members: List[MemberItem]
@@ -193,6 +198,7 @@ def build_detail_response(project: Project, db: Session) -> ProjectDetailRespons
         secBudget=project.sec_budget,
         secExpectedEffect=project.sec_expected_effect,
         secPostManagement=project.sec_post_management,
+        coverTitle=project.cover_title,
         approvedAt=datetime_to_str(project.approved_at),
         createdAt=datetime_to_str(project.created_at),
         members=members,
@@ -401,6 +407,8 @@ def update_project(
         project.sec_expected_effect = body.secExpectedEffect
     if body.secPostManagement is not None:
         project.sec_post_management = body.secPostManagement
+    if body.coverTitle is not None:
+        project.cover_title = body.coverTitle
 
     existing_members = db.query(ProjectMember).filter(
         ProjectMember.project_id == projectId
@@ -537,13 +545,18 @@ def get_ai_draft(
     dept_code = project.department_code if project.department_code in VALID_DEPT_CODES else "01"
 
     try:
+        import json
+        payload = {
+            "title": project.name,
+            "overview": project.overview or project.business_content or "",
+            "lead_department_code": dept_code,
+        }
+        print("=== AI 서버 요청 ===")
+        print(f"URL: {AI_SERVER}/api/task-draft")
+        print(f"payload: {json.dumps(payload, ensure_ascii=False)}")
         res = httpx.post(
             f"{AI_SERVER}/api/task-draft",
-            json={
-                "title": project.name,
-                "overview": project.overview or project.business_content or "",
-                "lead_department_code": dept_code,
-            },
+            json=payload,
             timeout=280.0,
         )
         res.raise_for_status()
@@ -593,25 +606,42 @@ def export_project(
         ("Ⅸ. 사후 관리 계획",       project.sec_post_management),
     ]
 
+    # ── 표지 데이터 준비 ──────────────────────────────────
+    members_raw = db.query(ProjectMember, User).join(
+        User, ProjectMember.user_id == User.user_id
+    ).filter(ProjectMember.project_id == projectId).all()
+
+    owner = next((u for pm, u in members_raw if pm.role_code == "01"), None)
+    owner_name = owner.name if owner else ""
+    dept_name = get_department_name(project.department_code, db)
+    year = project.start_date.year if project.start_date else datetime.now().year
+    cover_title_text = project.cover_title or f"{project.name} 추진계획서"
+    created_date = project.created_at.strftime("%Y. %m. %d.") if project.created_at else ""
+    # ────────────────────────────────────────────────────
+
     def html_to_text(html: str) -> str:
-            if not html:
-                return ""
-            soup = BeautifulSoup(html, "html.parser")
-            for tag in soup.find_all("h2"):
-                tag.decompose()
-            for br in soup.find_all("br"):
-                br.replace_with("\n")
-            lines = []
-            for elem in soup.find_all(["h3", "p"]):
-                text = elem.decode_contents()
-                text = text.replace("&nbsp;", " ").replace("\xa0", " ")
-                inner_soup = BeautifulSoup(text, "html.parser")
-                text = inner_soup.get_text(strip=False).rstrip()
-                if text.strip():
-                    lines.append(text)
-                else:
-                    lines.append("")
-            return "\n".join(lines)
+        if not html:
+            return ""
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup.find_all("h2"):
+            tag.decompose()
+        for br in soup.find_all("br"):
+            br.replace_with("\n")
+        lines = []
+        for elem in soup.find_all(["h3", "p"]):
+            text = elem.get_text(separator="", strip=False)
+            text = text.replace("\xa0", " ").rstrip()
+            if text.strip():
+                lines.append(text)
+            else:
+                lines.append("")
+        result = "\n".join(lines)
+        # 임시 디버깅
+        print("=== html_to_text 결과 ===")
+        for i, ch in enumerate(result):
+            if ord(ch) > 127:
+                print(f"  [{i}] U+{ord(ch):04X} = {ch!r}")
+        return result
 
     # ── DOCX ──────────────────────────────────────────────
     if format == "docx":
@@ -632,7 +662,34 @@ def export_project(
                 run.font.name = '맑은 고딕'
                 run._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
 
-        add_heading(title, level=1)
+        # ── 표지 (1페이지) ──
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.util import Pt
+
+        def add_cover_para(text, size=12, bold=False, align=WD_ALIGN_PARAGRAPH.CENTER):
+            p = doc.add_paragraph()
+            p.alignment = align
+            run = p.add_run(text)
+            run.font.name = '맑은 고딕'
+            run.font.size = Pt(size)
+            run.font.bold = bold
+            run._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
+
+        for _ in range(6):
+            add_cover_para("")
+        add_cover_para(f"{year}년도", size=13)
+        add_cover_para("")
+        add_cover_para(cover_title_text, size=20, bold=True)
+        add_cover_para("")
+        add_cover_para("─" * 25, size=11)
+        add_cover_para("")
+        add_cover_para(f"사업명    :  {project.name}", size=12, align=WD_ALIGN_PARAGRAPH.LEFT)
+        add_cover_para(f"추진부서  :  {dept_name}", size=12, align=WD_ALIGN_PARAGRAPH.LEFT)
+        add_cover_para(f"작성자    :  {owner_name}", size=12, align=WD_ALIGN_PARAGRAPH.LEFT)
+        add_cover_para(f"작성일    :  {created_date}", size=12, align=WD_ALIGN_PARAGRAPH.LEFT)
+
+        # 2페이지부터 본문
+        doc.add_page_break()
 
         for sec_title, sec_content in SECTIONS:
             if sec_content:
@@ -660,10 +717,77 @@ def export_project(
                 return height - 50
             return y
 
-        # 제목
-        c.setFont("MalgunGothic", 16)
-        c.drawString(50, height - 50, title)
-        y = height - 90
+        # ── 표지 (1페이지) ──
+        from reportlab.lib.units import cm
+
+        # 제목 줄바꿈 함수
+        def wrap_text(text, font, size, max_width):
+            lines = []
+            current = ""
+            for char in text:
+                test = current + char
+                if c.stringWidth(test, font, size) > max_width:
+                    lines.append(current)
+                    current = char
+                else:
+                    current = test
+            if current:
+                lines.append(current)
+            return lines
+
+        # ── 제목 블록
+        block_top = height - (height * 0.25)
+
+        # 위 파란 선
+        c.setStrokeColorRGB(0.0, 0.47, 0.84)
+        c.setLineWidth(7)
+        c.line(width * 0.08, block_top, width * 0.92, block_top)
+
+        # 연도
+        c.setFillColorRGB(0, 0, 0)
+        c.setFont("MalgunGothicBold", 12)
+        c.drawCentredString(width / 2, block_top - 44, f"{year}년도")
+
+        # 제목 줄바꿈
+        title_lines = wrap_text(cover_title_text, "MalgunGothicBold", 18, width * 0.76)
+        title_y = block_top - 76
+        c.setFont("MalgunGothicBold", 18)
+        for line in title_lines:
+            c.drawCentredString(width / 2, title_y, line)
+            title_y -= 30
+
+        # 아래 파란 선
+        block_bottom = title_y - 30
+        c.setStrokeColorRGB(0.0, 0.47, 0.84)
+        c.setLineWidth(7)
+        c.line(width * 0.08, block_bottom, width * 0.92, block_bottom)
+
+        line_y = block_bottom
+
+        # ── 정보 항목 (구분선 아래, 중앙 정렬 테이블)
+        info_items = [
+            ("사  업  명", project.name),
+            ("추 진 부 서", dept_name),
+            ("작  성  자", owner_name),
+            ("작  성  일", created_date),
+        ]
+        
+        label_x = width * 0.32
+        colon_x = width * 0.50
+        value_x = width * 0.52
+        info_y = height * 0.45
+        line_gap = 26
+
+        c.setFont("MalgunGothic", 11)
+        for label, value in info_items:
+            c.drawString(label_x, info_y, label)
+            c.drawString(colon_x, info_y, ":")
+            c.drawString(value_x, info_y, value)
+            info_y -= line_gap
+
+        # 2페이지부터 본문
+        c.showPage()
+        y = height - 50
 
         for sec_title, sec_content in SECTIONS:
             if not sec_content:
@@ -701,7 +825,16 @@ def export_project(
     # ── HWPX ──────────────────────────────────────────────
     elif format == "hwpx":
         doc = HwpxDocument.new()
-        doc.add_paragraph(title)
+        # ── 표지 (1페이지) ──
+        doc.add_paragraph(f"{year}년도")
+        doc.add_paragraph("")
+        doc.add_paragraph(cover_title_text)
+        doc.add_paragraph("")
+        doc.add_paragraph(f"사업명    :  {project.name}")
+        doc.add_paragraph(f"추진부서  :  {dept_name}")
+        doc.add_paragraph(f"작성자    :  {owner_name}")
+        doc.add_paragraph(f"작성일    :  {created_date}")
+        doc.add_paragraph("\x0C")  # 페이지 나누기
 
         for sec_title, sec_content in SECTIONS:
             if sec_content:
