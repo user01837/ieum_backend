@@ -30,8 +30,9 @@ from app.api.routers.auth import get_current_user
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FONT_DIR = os.path.join(BASE_DIR, "fonts")
-pdfmetrics.registerFont(TTFont('MalgunGothic', os.path.join(FONT_DIR, 'malgun.ttf')))
-pdfmetrics.registerFont(TTFont('MalgunGothicBold', os.path.join(FONT_DIR, 'malgunbd.ttf')))
+# 배포테스트 위한 임시 주석처리
+# pdfmetrics.registerFont(TTFont('MalgunGothic', os.path.join(FONT_DIR, 'malgun.ttf')))
+# pdfmetrics.registerFont(TTFont('MalgunGothicBold', os.path.join(FONT_DIR, 'malgunbd.ttf')))
 
 load_dotenv(".env.local")
 AI_SERVER = os.getenv("AI_SERVER")
