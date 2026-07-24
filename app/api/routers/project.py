@@ -758,6 +758,16 @@ def export_project(
         # 2페이지부터 본문
         doc.add_page_break()
 
+        # ── 목차 페이지 ──
+        for _ in range(3):
+            add_cover_para("")
+        add_cover_para("목  차", size=25, bold=True)
+        add_cover_para("")
+        add_cover_para("")
+        for sec_title, _ in SECTIONS:
+            add_cover_para(sec_title, size=15)
+        doc.add_page_break()
+
         for sec_title, sec_content in SECTIONS:
             if sec_content:
                 add_heading(sec_title, level=2)
@@ -850,6 +860,16 @@ def export_project(
 
         # 2페이지부터 본문
         c.showPage()
+
+        # ── 목차 페이지 ──
+        c.setFont("MalgunGothicBold", 25)
+        c.drawCentredString(width / 2, height / 2 + 180, "목  차")
+        toc_y = height / 2 + 120
+        c.setFont("MalgunGothic", 15)
+        for sec_title, _ in SECTIONS:
+            c.drawCentredString(width / 2, toc_y, sec_title)
+            toc_y -= 35
+        c.showPage()
         y = height - 50
 
         for sec_title, sec_content in SECTIONS:
@@ -904,6 +924,17 @@ def export_project(
         doc.add_paragraph(f"담당부서  :  {dept_name}")
         doc.add_paragraph(f"작성자    :  {owner_name}")
         doc.add_paragraph(f"작성일    :  {created_date}")
+        doc.add_paragraph("\x0C")
+
+        # ── 목차 페이지 ──
+        for _ in range(4):
+            doc.add_paragraph("")
+        doc.add_paragraph("목  차")
+        doc.add_paragraph("")
+        doc.add_paragraph("")
+        for sec_title, _ in SECTIONS:
+            doc.add_paragraph(sec_title)
+            doc.add_paragraph("")
         doc.add_paragraph("\x0C")
 
         for sec_title, sec_content in SECTIONS:
