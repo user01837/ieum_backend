@@ -7,17 +7,23 @@ import os
 
 import httpx
 from dotenv import load_dotenv
+from sqlalchemy.orm import Session
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 
 from docx import Document as DocxDocument
 from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Pt
+
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
+
 from hwpx.document import HwpxDocument
 from bs4 import BeautifulSoup
 
@@ -28,11 +34,17 @@ from app.models.user import User
 from app.models.department import Department
 from app.api.routers.auth import get_current_user
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-FONT_DIR = os.path.join(BASE_DIR, "fonts")
-# 배포테스트 위한 임시 주석처리
-# pdfmetrics.registerFont(TTFont('MalgunGothic', os.path.join(FONT_DIR, 'malgun.ttf')))
-# pdfmetrics.registerFont(TTFont('MalgunGothicBold', os.path.join(FONT_DIR, 'malgunbd.ttf')))
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "fonts")
+FONT_DIR = os.path.normpath(FONT_DIR)
+pdfmetrics.registerFont(TTFont('MalgunGothic', os.path.join(FONT_DIR, 'malgun.ttf')))
+pdfmetrics.registerFont(TTFont('MalgunGothicBold', os.path.join(FONT_DIR, 'malgunbd.ttf')))
+pdfmetrics.registerFontFamily(
+    'MalgunGothic',
+    normal='MalgunGothic',
+    bold='MalgunGothicBold',
+    italic='MalgunGothic',
+    boldItalic='MalgunGothicBold',
+)
 
 load_dotenv(".env.local")
 AI_SERVER = os.getenv("AI_SERVER")
@@ -264,7 +276,7 @@ def get_project_list(
     if keyword:
         query = query.filter(Project.name.like(f"%{keyword}%"))
 
-    if department_code:  # ← 추가
+    if department_code:
         query = query.filter(Project.department_code == department_code)
 
     total_elements = query.count()
@@ -280,7 +292,7 @@ def get_project_list(
             startDate=date_to_str(p.start_date),
             deadline=date_to_str(p.deadline),
             createdAt=datetime_to_str(p.created_at),
-            roleType="ADMIN" if current_user.system_role_code == "02" else scope,  # ← 수정
+            roleType="ADMIN" if current_user.system_role_code == "02" else scope,
         )
         for p in items
     ]
@@ -360,7 +372,7 @@ def get_project_detail(
     return build_detail_response(project, db)
 
 
-# 4. 프로젝트 저장 (수정)
+# 4. 프로젝트 저장
 @router.patch(
     "/{projectId}",
     response_model=ProjectDetailResponse,
@@ -546,15 +558,11 @@ def get_ai_draft(
     dept_code = project.department_code if project.department_code in VALID_DEPT_CODES else "01"
 
     try:
-        import json
         payload = {
             "title": project.name,
             "overview": project.overview or project.business_content or "",
             "lead_department_code": dept_code,
         }
-        print("=== AI 서버 요청 ===")
-        print(f"URL: {AI_SERVER}/api/task-draft")
-        print(f"payload: {json.dumps(payload, ensure_ascii=False)}")
         res = httpx.post(
             f"{AI_SERVER}/api/task-draft",
             json=payload,
@@ -631,19 +639,14 @@ def export_project(
         lines = []
         for elem in soup.find_all(["h3", "p"]):
             text = elem.get_text(separator="", strip=False)
-            text = text.replace("\xa0", " ").rstrip()
+            text = text.replace("\xa0", " ")
+            text = text.strip()
             if text.strip():
                 lines.append(text)
             else:
                 lines.append("")
-        result = "\n".join(lines)
-        # 임시 디버깅
-        print("=== html_to_text 결과 ===")
-        for i, ch in enumerate(result):
-            if ord(ch) > 127:
-                print(f"  [{i}] U+{ord(ch):04X} = {ch!r}")
-        return result
-
+        return "\n".join(lines)
+    
     # ── DOCX ──────────────────────────────────────────────
     if format == "docx":
         doc = DocxDocument()
@@ -664,9 +667,6 @@ def export_project(
                 run._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
 
         # ── 표지 (1페이지) ──
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
-        from docx.util import Pt
-
         def add_cover_para(text, size=12, bold=False, align=WD_ALIGN_PARAGRAPH.CENTER):
             p = doc.add_paragraph()
             p.alignment = align
@@ -676,18 +676,84 @@ def export_project(
             run.font.bold = bold
             run._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
 
-        for _ in range(6):
-            add_cover_para("")
-        add_cover_para(f"{year}년도", size=13)
+        def add_border_para(text, size=12, bold=False, border_top=False, border_bottom=False, space_before=0):
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            p.paragraph_format.space_before = Pt(space_before)
+            run = p.add_run(text)
+            run.font.name = '맑은 고딕'
+            run.font.size = Pt(size)
+            run.font.bold = bold
+            run._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
+            pPr = p._element.get_or_add_pPr()
+            pBdr = OxmlElement('w:pBdr')
+            if border_top:
+                top = OxmlElement('w:top')
+                top.set(qn('w:val'), 'single')
+                top.set(qn('w:sz'), '24')
+                top.set(qn('w:space'), '4')
+                top.set(qn('w:color'), '0078D7')
+                pBdr.append(top)
+            if border_bottom:
+                bottom = OxmlElement('w:bottom')
+                bottom.set(qn('w:val'), 'single')
+                bottom.set(qn('w:sz'), '24')
+                bottom.set(qn('w:space'), '4')
+                bottom.set(qn('w:color'), '0078D7')
+                pBdr.append(bottom)
+            pPr.append(pBdr)
+
         add_cover_para("")
+        add_cover_para("")
+
+        # 위 파란선 + 공백
+        add_border_para("", size=2, border_top=True, space_before=2)
+        # 연도
+        add_cover_para(f"{year}년도", size=13, bold=True)
+        # 제목
         add_cover_para(cover_title_text, size=20, bold=True)
-        add_cover_para("")
-        add_cover_para("─" * 25, size=11)
-        add_cover_para("")
-        add_cover_para(f"사업명    :  {project.name}", size=12, align=WD_ALIGN_PARAGRAPH.LEFT)
-        add_cover_para(f"추진부서  :  {dept_name}", size=12, align=WD_ALIGN_PARAGRAPH.LEFT)
-        add_cover_para(f"작성자    :  {owner_name}", size=12, align=WD_ALIGN_PARAGRAPH.LEFT)
-        add_cover_para(f"작성일    :  {created_date}", size=12, align=WD_ALIGN_PARAGRAPH.LEFT)
+        # 공백 + 아래 파란선
+        add_border_para("", size=2, border_bottom=True, space_before=2)
+        for _ in range(7):
+            add_cover_para("")
+
+        # 정보 항목
+        info_items_docx = [
+            ("사  업  명", project.name),
+            ("담 당 부 서", dept_name),
+            ("작  성  자", owner_name),
+            ("작  성  일", created_date),
+        ]
+        
+        for label, value in info_items_docx:
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            p.paragraph_format.left_indent = Pt(120)
+
+            # 탭스톱 설정 (콜론 위치 고정)
+            pPr = p._element.get_or_add_pPr()
+            tabs = OxmlElement('w:tabs')
+            tab = OxmlElement('w:tab')
+            tab.set(qn('w:val'), 'left')
+            tab.set(qn('w:pos'), '1440')
+            tabs.append(tab)
+            pPr.append(tabs)
+
+            # 라벨
+            run_label = p.add_run(label)
+            run_label.font.name = '맑은 고딕'
+            run_label.font.size = Pt(11)
+            run_label._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
+            # 탭 → 콜론 → 값
+            run_colon = p.add_run("\t:  ")
+            run_colon.font.name = '맑은 고딕'
+            run_colon.font.size = Pt(11)
+            run_colon._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
+            # 값
+            run_value = p.add_run(value)
+            run_value.font.name = '맑은 고딕'
+            run_value.font.size = Pt(11)
+            run_value._element.rPr.rFonts.set(qn('w:eastAsia'), '맑은 고딕')
 
         # 2페이지부터 본문
         doc.add_page_break()
@@ -715,12 +781,11 @@ def export_project(
         def new_page_if_needed(y, needed=30):
             if y < needed:
                 c.showPage()
+                c.setFont("MalgunGothic", 11)
                 return height - 50
             return y
 
         # ── 표지 (1페이지) ──
-        from reportlab.lib.units import cm
-
         # 제목 줄바꿈 함수
         def wrap_text(text, font, size, max_width):
             lines = []
@@ -737,22 +802,22 @@ def export_project(
             return lines
 
         # ── 제목 블록
-        block_top = height - (height * 0.25)
+        block_top = height - (height * 0.15)
 
         # 위 파란 선
         c.setStrokeColorRGB(0.0, 0.47, 0.84)
-        c.setLineWidth(7)
+        c.setLineWidth(5)
         c.line(width * 0.08, block_top, width * 0.92, block_top)
 
         # 연도
         c.setFillColorRGB(0, 0, 0)
         c.setFont("MalgunGothicBold", 12)
-        c.drawCentredString(width / 2, block_top - 44, f"{year}년도")
+        c.drawCentredString(width / 2, block_top - 64, f"{year}년도")
 
         # 제목 줄바꿈
-        title_lines = wrap_text(cover_title_text, "MalgunGothicBold", 18, width * 0.76)
-        title_y = block_top - 76
-        c.setFont("MalgunGothicBold", 18)
+        title_lines = wrap_text(cover_title_text, "MalgunGothicBold", 22, width * 0.76)
+        title_y = block_top - 106
+        c.setFont("MalgunGothicBold", 22)
         for line in title_lines:
             c.drawCentredString(width / 2, title_y, line)
             title_y -= 30
@@ -760,30 +825,27 @@ def export_project(
         # 아래 파란 선
         block_bottom = title_y - 30
         c.setStrokeColorRGB(0.0, 0.47, 0.84)
-        c.setLineWidth(7)
+        c.setLineWidth(5)
         c.line(width * 0.08, block_bottom, width * 0.92, block_bottom)
-
-        line_y = block_bottom
 
         # ── 정보 항목 (구분선 아래, 중앙 정렬 테이블)
         info_items = [
             ("사  업  명", project.name),
-            ("추 진 부 서", dept_name),
+            ("담 당 부 서", dept_name),
             ("작  성  자", owner_name),
             ("작  성  일", created_date),
         ]
-        
-        label_x = width * 0.32
-        colon_x = width * 0.50
-        value_x = width * 0.52
-        info_y = height * 0.45
+
+        info_y = height * 0.22
         line_gap = 26
+        colon_x = width * 0.40
+        value_x = width * 0.45
 
         c.setFont("MalgunGothic", 11)
         for label, value in info_items:
-            c.drawString(label_x, info_y, label)
+            c.drawRightString(colon_x - 6, info_y, label)  # 라벨 오른쪽 정렬
             c.drawString(colon_x, info_y, ":")
-            c.drawString(value_x, info_y, value)
+            c.drawString(value_x + 6, info_y, value)
             info_y -= line_gap
 
         # 2페이지부터 본문
@@ -795,22 +857,28 @@ def export_project(
                 continue
             # 섹션 제목
             y = new_page_if_needed(y, 60)
-            c.setFont("MalgunGothic", 13)
+            c.setFont("MalgunGothicBold", 13)
             c.drawString(50, y, sec_title)
             y -= 25
 
             # 섹션 내용
             c.setFont("MalgunGothic", 11)
+            max_width = width - 120
             for line in html_to_text(sec_content).split("\n"):
                 line = line.strip()
                 if not line:
                     y -= 8
                     continue
-                # 긴 줄 줄바꿈
-                while len(line) > 0:
+                # 너비 기반 줄바꿈
+                while line:
                     y = new_page_if_needed(y)
-                    c.drawString(60, y, line[:55])
-                    line = line[55:]
+                    cut = len(line)
+                    while cut > 0 and c.stringWidth(line[:cut], "MalgunGothic", 11) > max_width:
+                        cut -= 1
+                    if cut == 0:
+                        cut = 1
+                    c.drawString(60, y, line[:cut])
+                    line = line[cut:]
                     y -= 16
 
             y -= 12  # 섹션 간격
@@ -827,15 +895,16 @@ def export_project(
     elif format == "hwpx":
         doc = HwpxDocument.new()
         # ── 표지 (1페이지) ──
+        doc.add_paragraph("")
         doc.add_paragraph(f"{year}년도")
         doc.add_paragraph("")
         doc.add_paragraph(cover_title_text)
         doc.add_paragraph("")
         doc.add_paragraph(f"사업명    :  {project.name}")
-        doc.add_paragraph(f"추진부서  :  {dept_name}")
+        doc.add_paragraph(f"담당부서  :  {dept_name}")
         doc.add_paragraph(f"작성자    :  {owner_name}")
         doc.add_paragraph(f"작성일    :  {created_date}")
-        doc.add_paragraph("\x0C")  # 페이지 나누기
+        doc.add_paragraph("\x0C")
 
         for sec_title, sec_content in SECTIONS:
             if sec_content:
