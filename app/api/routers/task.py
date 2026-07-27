@@ -164,9 +164,19 @@ def delete_task(
     if not task:
         raise HTTPException(status_code=404, detail="존재하지 않는 Task입니다.")
 
+    deleted_task_id = task.task_id
+    deleted_department_code = task.department_code
+
     db.query(TaskAssignee).filter(TaskAssignee.task_id == taskId).delete(synchronize_session=False)
     db.delete(task)
     db.commit()
+
+    try:
+        deindex_url = f"{settings.AI_SERVER.rstrip('/')}/api/task-category/{deleted_department_code}/{deleted_task_id}"
+        response = httpx.delete(deindex_url, timeout=30.0)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"WARN: task 색인 삭제 실패(task_id={deleted_task_id}): {e}")
 
 class AssigneeRequest(BaseModel):
     userId: int
