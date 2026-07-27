@@ -7,4 +7,4 @@ class Department(Base):
     department_code = Column(String(10), primary_key=True, index=True)
     name = Column(String(100), nullable=False)
     parent_department_code = Column(String(10), ForeignKey("DEPARTMENT.department_code"), nullable=True)
-    head_user_id = Column(Integer, ForeignKey("user.user_id"), nullable=True)
+    head_user_id = Column(Integer, ForeignKey("USER.user_id"), nullable=True)

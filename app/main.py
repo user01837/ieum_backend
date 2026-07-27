@@ -16,10 +16,16 @@ origins = [
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],         # 모든 출처 허용 (디버깅용)
-    allow_credentials=True,      # 쿠키를 포함한 요청 허용
-    allow_methods=["*"],         # 모든 HTTP 메소드 허용
-    allow_headers=["*"],         # 모든 HTTP 헤더 허용
+    allow_origin_regex=r"https://.*\.vercel\.app",  # 모든 Vercel 프리뷰 도메인 허용
+    allow_origins=[
+        "http://localhost:5173",
+        "http://15.165.117.26",
+        "https://ggieum.site",
+        "https://www.ggieum.site",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 test_connection()

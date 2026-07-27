@@ -2,7 +2,7 @@ from sqlalchemy import Column, String, Boolean, Integer, DateTime, func, Foreign
 from app.db.database import Base
 
 class User(Base):
-    __tablename__ = "user"
+    __tablename__ = "USER"
 
     # user_id가 사번(로그인 ID) 역할을 하며, Primary Key 입니다.
     # API 요청(userId: str)에 맞춰 String으로 정의합니다.
@@ -13,7 +13,7 @@ class User(Base):
     department_code = Column(String(10), nullable=True)
     system_role_code = Column(String(10), nullable=True)
     status_code = Column(String(10), nullable=True)
-    predecessor_user_id = Column(String(50), ForeignKey("user.user_id"), nullable=True)
+    predecessor_user_id = Column(String(50), ForeignKey("USER.user_id"), nullable=True)  # 👈 "user" -> 대문자 "USER"로 수정
     refresh_token = Column(String(512), nullable=True)
     token_expires_at = Column(DateTime, nullable=True)
     last_login_at = Column(DateTime, nullable=True)

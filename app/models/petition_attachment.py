@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime
 from app.db.database import Base
 
 class PetitionAttachment(Base):
-    __tablename__ = "petition_attachment"
+    __tablename__ = "PETITION_ATTACHMENT"
 
     attachment_id = Column(Integer, primary_key=True, index=True)
     petition_id = Column(Integer, ForeignKey("PETITION.petition_id"), nullable=False)

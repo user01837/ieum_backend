@@ -1,0 +1,9 @@
+.env.local
+.env.example
+.vscode
+tests
+__pycache__
+*.pyc
+*.pyo
+백엔드 개발 환경 설정.md
+!fonts/

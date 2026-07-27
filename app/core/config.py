@@ -1,8 +1,10 @@
+import os
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
+APP_ENV = os.getenv("APP_ENV", "local")
 
 
 class Settings(BaseSettings):
@@ -26,11 +28,10 @@ class Settings(BaseSettings):
 
     EXTERNAL_PETITION_API_KEY: str
 
-
-
     model_config = SettingsConfigDict(
-        env_file=BASE_DIR / ".env.local",
-        env_file_encoding="utf-8"
+        env_file=BASE_DIR / f".env.{APP_ENV}",
+        env_file_encoding="utf-8",
+        extra="ignore"
     )
 
 
