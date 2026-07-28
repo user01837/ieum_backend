@@ -2,7 +2,7 @@ import math
 from fastapi import APIRouter, Depends, Query, HTTPException, status, Form, File, UploadFile, BackgroundTasks, Header
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, case, func
-from datetime import datetime
+from datetime import datetime, timedelta
 from pydantic import BaseModel
 from typing import List, Optional
 import httpx
@@ -213,6 +213,7 @@ def create_external_petition(
         assignee_user_id=assignee_user_id,
         status_code="01",
         received_at=datetime.now(),
+        due_date=datetime.now() + timedelta(days=14),
     )
     db.add(petition)
     db.commit()
