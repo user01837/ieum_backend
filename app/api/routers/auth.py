@@ -116,6 +116,7 @@ def create_token(data: dict, expires_delta: timedelta) -> str:
     responses={
         status.HTTP_400_BAD_REQUEST: {"description": "요청값 오류 (사번 또는 비밀번호 누락)"},
         status.HTTP_401_UNAUTHORIZED: {"description": "사번 또는 비밀번호 불일치"},
+        status.HTTP_403_FORBIDDEN: {"description": "로그인 불가 (휴직 또는 퇴직 계정)"},
     }
 )
 def login(login_request: UserLoginRequest, db: Session = Depends(get_db)):
@@ -133,6 +134,18 @@ def login(login_request: UserLoginRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="사번, 비밀번호 또는 부서가 일치하지 않습니다.",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # 재직 상태 확인 (01: 재직, 02: 휴직, 03: 퇴직)
+    if user.status_code == '02': # 휴직
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="휴직 상태의 계정으로, 로그인할 수 없습니다.",
+        )
+    if user.status_code == '03': # 퇴직
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="퇴직 처리된 계정으로, 로그인할 수 없습니다.",
         )
 
     # 토큰에 담을 데이터 (사용자 ID와 직책 코드 포함)
