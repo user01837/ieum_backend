@@ -123,3 +123,21 @@ def unread_count_by_room(db: Session, user_id: str) -> dict[int, int]:
         .all()
     )
     return {room_id: count for room_id, count in rows}
+
+
+def record_message(db: Session, room_id: int, sender_id: str, content: str) -> ChatMessage:
+    message = ChatMessage(room_id=room_id, sender_id=sender_id, content=content)
+    db.add(message)
+    db.commit()
+    db.refresh(message)
+    return message
+
+
+def create_notification(db: Session, user_id: str, room_id: int, message_id: int) -> Notification:
+    notification = Notification(
+        user_id=user_id, type="CHAT_MESSAGE", room_id=room_id, message_id=message_id, is_read=False,
+    )
+    db.add(notification)
+    db.commit()
+    db.refresh(notification)
+    return notification
