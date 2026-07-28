@@ -36,14 +36,21 @@ def test_send_new_message_push_removes_unregistered_token(db_session, make_user,
     monkeypatch.setattr(fcm_service, "_initialized", True)
     user = make_user("emp002")
     db_session.add(DeviceToken(user_id=user.user_id, fcm_token="dead-token"))
+    db_session.add(DeviceToken(user_id=user.user_id, fcm_token="alive-token"))
     db_session.commit()
 
     class FakeUnregisteredError(Exception):
         pass
     FakeUnregisteredError.__name__ = "UnregisteredError"
 
+    def _fake_send(fcm_message):
+        if fcm_message.token == "dead-token":
+            raise FakeUnregisteredError("gone")
+        return "fake-message-id"
+
     message = ChatMessage(room_id=1, sender_id="emp001", content="hi")
-    with patch("app.services.fcm_service.messaging.send", side_effect=FakeUnregisteredError("gone")):
+    with patch("app.services.fcm_service.messaging.send", side_effect=_fake_send):
         fcm_service.send_new_message_push(db_session, user.user_id, 1, message)
 
     assert db_session.query(DeviceToken).filter(DeviceToken.fcm_token == "dead-token").count() == 0
+    assert db_session.query(DeviceToken).filter(DeviceToken.fcm_token == "alive-token").count() == 1
