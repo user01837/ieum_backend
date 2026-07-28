@@ -180,8 +180,11 @@ def create_external_petition(
     except Exception as e:
         print(f"WARN: 담당업무 자동분류 실패, 미배정으로 접수: {e}")
 
-    if task_id is not None and db.query(Task.task_id).filter(Task.task_id == task_id).first() is None:
-        print(f"WARN: ieum_ai가 존재하지 않는 task_id를 반환함({task_id!r}), 미배정으로 접수")
+    if task_id is not None and db.query(Task.task_id).filter(
+        Task.task_id == task_id,
+        Task.is_deleted == False,
+    ).first() is None:
+        print(f"WARN: ieum_ai가 존재하지 않거나 삭제된 task_id를 반환함({task_id!r}), 미배정으로 접수")
         task_id = None
 
     assignee_user_id = None
@@ -276,10 +279,15 @@ def get_petitions(
             # taskId가 제공된 경우, 해당 업무로 추가 필터링
             if taskId is not None:
                 query = query.filter(Petition.task_id == taskId)
-            # taskId가 없는 경우, 현재 사용자가 담당하는 모든 업무의 민원을 조회
+            # taskId가 없는 경우, 현재 사용자가 담당하는 모든 업무(삭제되지 않은 업무만)의 민원을 조회
             else:
-                # 1. task_assignee 테이블에서 현재 사용자의 모든 task_id를 조회
-                user_task_ids_query = db.query(TaskAssignee.task_id).filter(TaskAssignee.user_id == current_user.user_id)
+                # 1. task_assignee 테이블에서 현재 사용자의 삭제되지 않은 task_id를 조회
+                user_task_ids_query = db.query(TaskAssignee.task_id).join(
+                    Task, TaskAssignee.task_id == Task.task_id
+                ).filter(
+                    TaskAssignee.user_id == current_user.user_id,
+                    Task.is_deleted == False,
+                )
                 # 2. 해당 task_id 목록에 포함되는 민원들만 필터링
                 query = query.filter(Petition.task_id.in_(user_task_ids_query))
         elif scope.upper() == "PREDECESSOR":

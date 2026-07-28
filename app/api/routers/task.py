@@ -202,9 +202,12 @@ def add_assignee(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    task = db.query(Task).filter(Task.task_id == taskId).first()
+    task = db.query(Task).filter(
+        Task.task_id == taskId,
+        Task.is_deleted == False,
+    ).first()
     if not task:
-        raise HTTPException(status_code=404, detail="존재하지 않는 Task입니다.")
+        raise HTTPException(status_code=404, detail="존재하지 않는 Task이거나 이미 삭제되었습니다.")
 
     user = db.query(User).filter(User.user_id == str(body.userId)).first()
     if not user:
