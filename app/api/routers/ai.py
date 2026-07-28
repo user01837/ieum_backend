@@ -44,6 +44,7 @@ class SimilarPetitionResult(BaseModel):
     department_code: str
     domain_code: str
     status_code: str
+    received_date: Optional[str] = None
     similarity: float
     rerank_score: float
 
