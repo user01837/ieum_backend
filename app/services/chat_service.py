@@ -4,7 +4,7 @@ from app.models.chat import ChatRoom, ChatRoomMember, ChatMessage
 
 def find_existing_direct_room(db: Session, user_id_a: str, user_id_b: str) -> ChatRoom | None:
     """두 사람 모두를 멤버로 둔 1:1(is_group=False) 방이 이미 있으면 반환."""
-    rooms_of_a = db.query(ChatRoomMember.room_id).filter(ChatRoomMember.user_id == user_id_a).subquery()
+    rooms_of_a = db.query(ChatRoomMember.room_id).filter(ChatRoomMember.user_id == user_id_a).scalar_subquery()
     return (
         db.query(ChatRoom)
         .join(ChatRoomMember, ChatRoom.room_id == ChatRoomMember.room_id)

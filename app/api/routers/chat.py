@@ -46,6 +46,11 @@ def create_room(
     if invalid_ids:
         raise HTTPException(status_code=400, detail=f"존재하지 않는 사용자: {invalid_ids}")
 
+    # 생성자를 제외한 실제 참여자가 있는지 확인
+    actual_member_ids = [uid for uid in req.member_ids if uid != current_user.user_id]
+    if not actual_member_ids:
+        raise HTTPException(status_code=400, detail="채팅 상대를 1명 이상 지정해야 합니다.")
+
     room = chat_service.create_room(db, current_user.user_id, req.member_ids, req.name)
     member_ids = [
         m.user_id for m in db.query(ChatRoomMember).filter(ChatRoomMember.room_id == room.room_id).all()

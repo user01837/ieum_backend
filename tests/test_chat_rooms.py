@@ -40,3 +40,8 @@ def test_list_rooms_returns_my_rooms(client, make_user):
     rooms = res.json()
     assert len(rooms) == 1
     assert "emp002" in rooms[0]["member_ids"]
+
+
+def test_create_room_rejects_self_only_member(client):
+    res = client.post("/chat/rooms", json={"member_ids": ["emp001"]})
+    assert res.status_code == 400
