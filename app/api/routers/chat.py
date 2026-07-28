@@ -31,6 +31,7 @@ class RoomListItem(BaseModel):
     member_ids: list[str]
     last_message: Optional[str]
     last_message_at: Optional[str]
+    unread_count: int
 
 
 @router.post("/rooms", response_model=RoomResponse, status_code=status.HTTP_201_CREATED)
@@ -65,3 +66,46 @@ def list_rooms(
 ):
     rooms = chat_service.list_rooms_for_user(db, current_user.user_id)
     return [RoomListItem(**r) for r in rooms]
+
+
+class MessageResponse(BaseModel):
+    message_id: int
+    room_id: int
+    sender_id: str
+    content: str
+    created_at: str
+
+
+@router.get("/rooms/{room_id}/messages", response_model=list[MessageResponse])
+def get_room_messages(
+    room_id: int,
+    before_message_id: Optional[int] = Query(None),
+    size: int = Query(30, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not chat_service.is_room_member(db, room_id, current_user.user_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="해당 채팅방의 멤버가 아닙니다.")
+
+    messages = chat_service.get_messages(db, room_id, before_message_id, size)
+    return [
+        MessageResponse(
+            message_id=m.message_id,
+            room_id=m.room_id,
+            sender_id=m.sender_id,
+            content=m.content,
+            created_at=m.created_at.isoformat(),
+        )
+        for m in messages
+    ]
+
+
+@router.post("/rooms/{room_id}/read", status_code=status.HTTP_204_NO_CONTENT)
+def mark_room_read_endpoint(
+    room_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not chat_service.is_room_member(db, room_id, current_user.user_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="해당 채팅방의 멤버가 아닙니다.")
+    chat_service.mark_room_read(db, room_id, current_user.user_id)

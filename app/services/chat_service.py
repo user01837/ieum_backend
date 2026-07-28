@@ -1,5 +1,7 @@
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from app.models.chat import ChatRoom, ChatRoomMember, ChatMessage
+from app.models.notification import Notification
 
 
 def find_existing_direct_room(db: Session, user_id_a: str, user_id_b: str) -> ChatRoom | None:
@@ -46,6 +48,7 @@ def list_rooms_for_user(db: Session, user_id: str) -> list[dict]:
         return []
 
     rooms = db.query(ChatRoom).filter(ChatRoom.room_id.in_(room_ids)).all()
+    unread_map = unread_count_by_room(db, user_id)
     result = []
     for room in rooms:
         member_ids = [
@@ -64,6 +67,7 @@ def list_rooms_for_user(db: Session, user_id: str) -> list[dict]:
             "member_ids": member_ids,
             "last_message": last_message.content if last_message else None,
             "last_message_at": last_message.created_at.isoformat() if last_message else None,
+            "unread_count": unread_map.get(room.room_id, 0),
         })
     result.sort(key=lambda r: r["last_message_at"] or "", reverse=True)
     return result
@@ -84,3 +88,38 @@ def other_member_ids(db: Session, room_id: int, sender_id: str) -> list[str]:
         for m in db.query(ChatRoomMember).filter(ChatRoomMember.room_id == room_id).all()
         if m.user_id != sender_id
     ]
+
+
+def get_messages(db: Session, room_id: int, before_message_id: int | None, size: int) -> list[ChatMessage]:
+    query = db.query(ChatMessage).filter(ChatMessage.room_id == room_id)
+    if before_message_id is not None:
+        query = query.filter(ChatMessage.message_id < before_message_id)
+    return query.order_by(ChatMessage.message_id.desc()).limit(size).all()
+
+
+def mark_room_read(db: Session, room_id: int, user_id: str) -> int:
+    updated = (
+        db.query(Notification)
+        .filter(
+            Notification.room_id == room_id,
+            Notification.user_id == user_id,
+            Notification.is_read.is_(False),
+        )
+        .update({"is_read": True}, synchronize_session=False)
+    )
+    db.commit()
+    return updated
+
+
+def unread_count_by_room(db: Session, user_id: str) -> dict[int, int]:
+    rows = (
+        db.query(Notification.room_id, func.count(Notification.notification_id))
+        .filter(
+            Notification.user_id == user_id,
+            Notification.is_read.is_(False),
+            Notification.room_id.isnot(None),
+        )
+        .group_by(Notification.room_id)
+        .all()
+    )
+    return {room_id: count for room_id, count in rows}
