@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, status, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from pydantic import BaseModel
 from typing import List, Optional
 import httpx
@@ -160,15 +161,18 @@ def delete_task(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    task = db.query(Task).filter(Task.task_id == taskId).first()
+    task = db.query(Task).filter(
+        Task.task_id == taskId,
+        Task.is_deleted == False,
+    ).first()
     if not task:
-        raise HTTPException(status_code=404, detail="존재하지 않는 Task입니다.")
+        raise HTTPException(status_code=404, detail="존재하지 않는 Task이거나 이미 삭제되었습니다.")
 
     deleted_task_id = task.task_id
     deleted_department_code = task.department_code
 
-    db.query(TaskAssignee).filter(TaskAssignee.task_id == taskId).delete(synchronize_session=False)
-    db.delete(task)
+    task.is_deleted = True
+    task.deleted_at = func.now()
     db.commit()
 
     try:
