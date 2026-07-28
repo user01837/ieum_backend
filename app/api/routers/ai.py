@@ -33,7 +33,7 @@ class SimilarPetitionsRequest(BaseModel):
     department_code: str = Field(..., description="현재 민원의 부서 코드")
     top_k: int = Field(2, description="반환할 최대 결과 수")
     exclude_ids: List[int] = Field([], description="결과에서 제외할 민원 ID 목록")
-    min_similarity: float = Field(0.0, description="최소 유사도 (0.0 ~ 100.0)")
+    min_similarity: float = Field(65.0, description="최소 유사도 (0.0 ~ 100.0) - 이 값 미만인 결과는 제외")
 
 class SimilarPetitionResult(BaseModel):
     """유사 민원 검색 결과 항목"""
