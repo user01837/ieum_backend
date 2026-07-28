@@ -39,7 +39,8 @@ def get_all_departments(db: Session = Depends(get_db)):
     시스템에 등록된 모든 부서 목록을 조회합니다.
     로그인 페이지의 드롭다운 메뉴에 사용됩니다.
     """
-    departments = db.query(Department.department_code.label("code"), Department.name.label("name")).order_by(Department.department_code).all()
+    departments = db.query(Department.department_code.label("code"), Department.name.label("name")) \
+        .order_by(Department.department_code).all()
     return departments
 
 @router.get(

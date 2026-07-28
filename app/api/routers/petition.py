@@ -262,7 +262,9 @@ def get_petitions(
 
     # 2. Scope 및 권한에 따른 필터링
     if is_admin:
-        # 관리자는 모든 민원을 볼 수 있음. 부서 코드로 추가 필터링 가능.
+        # 관리자는 '09'(관리자) 부서를 제외한 모든 민원을 볼 수 있음.
+        query = query.filter(Petition.department_code != '09')
+        # 부서 코드로 추가 필터링 가능.
         if departmentCode:
             query = query.filter(Petition.department_code == departmentCode)
     else:
