@@ -150,7 +150,7 @@ def get_users_for_management(
     # 6. 담당 Task 정보 조회 (N+1 방지)
     task_map = {}
     if user_ids:
-        task_assignments = db.query(TaskAssignee.user_id, Task.name).join(Task, TaskAssignee.task_id == Task.task_id).filter(TaskAssignee.user_id.in_(user_ids)).order_by(TaskAssignee.user_id, Task.task_id).all()
+        task_assignments = db.query(TaskAssignee.user_id, Task.name).join(Task, TaskAssignee.task_id == Task.task_id).filter(TaskAssignee.user_id.in_(user_ids), Task.is_deleted == False).order_by(TaskAssignee.user_id, Task.task_id).all()
         for user_id, task_name in task_assignments:
             if user_id not in task_map:
                 task_map[user_id] = []

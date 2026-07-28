@@ -38,7 +38,10 @@ def get_my_tasks(
         .filter(TaskAssignee.user_id == current_user.user_id)
 
     # 2. 해당 task_id 목록을 사용하여 Task 테이블에서 업무 정보 조회
-    my_tasks = db.query(Task).filter(Task.task_id.in_(assigned_task_ids_query)).order_by(Task.name).all()
+    my_tasks = db.query(Task).filter(
+        Task.task_id.in_(assigned_task_ids_query),
+        Task.is_deleted == False,
+    ).order_by(Task.name).all()
 
     # 3. 응답 모델에 맞게 데이터 변환
     return [MyTaskResponse(taskId=task.task_id, name=task.name) for task in my_tasks]
@@ -72,7 +75,8 @@ def get_department_tasks(
         target_dept = current_user.department_code
 
     tasks = db.query(Task).filter(
-        Task.department_code == target_dept
+        Task.department_code == target_dept,
+        Task.is_deleted == False,
     ).all()
 
     result = []

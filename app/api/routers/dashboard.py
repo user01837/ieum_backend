@@ -124,17 +124,20 @@ def get_tasks_summary(
     target_dept = department_code or current_user.department_code
 
     total_tasks = db.query(Task).filter(
-        Task.department_code == target_dept
+        Task.department_code == target_dept,
+        Task.is_deleted == False,
     ).count()
 
     assigned_task_ids = db.query(TaskAssignee.task_id).join(
         Task, TaskAssignee.task_id == Task.task_id
     ).filter(
-        Task.department_code == target_dept
+        Task.department_code == target_dept,
+        Task.is_deleted == False,
     ).distinct().subquery()
 
     unassigned_tasks = db.query(Task).filter(
         Task.department_code == target_dept,
+        Task.is_deleted == False,
         Task.task_id.notin_(assigned_task_ids),
     ).count()
 
@@ -146,7 +149,8 @@ def get_tasks_summary(
         row.user_id for row in db.query(TaskAssignee.user_id).join(
             Task, TaskAssignee.task_id == Task.task_id
         ).filter(
-            Task.department_code == target_dept
+            Task.department_code == target_dept,
+            Task.is_deleted == False,
         ).all()
     }
 
