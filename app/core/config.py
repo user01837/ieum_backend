@@ -28,6 +28,9 @@ class Settings(BaseSettings):
 
     EXTERNAL_PETITION_API_KEY: str
 
+    # FCM (선택) - 비어 있으면 채팅은 정상 동작하되 푸시 발송만 스킵된다.
+    FIREBASE_CREDENTIALS_PATH: str | None = None
+
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / f".env.{APP_ENV}",
         env_file_encoding="utf-8",

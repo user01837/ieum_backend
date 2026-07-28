@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.db.session import get_db
 from app.models.user import User
-from app.services import chat_service
+from app.services import chat_service, fcm_service
 from app.services.chat_connection_manager import manager as chat_manager
 
 router = APIRouter()
@@ -107,8 +107,10 @@ async def chat_ws(websocket: WebSocket, token: str = Query(...), db: Session = D
                             }
                             await _broadcast(elsewhere_sockets, message_payload)
                             await _broadcast(elsewhere_sockets, notif_payload)
-                        # elsewhere_sockets가 비어있고 recipient_sockets도 비어있으면(오프라인) 알림 row만 생성되고
-                        # 소켓 전송은 없다(FCM 발송은 Task 7에서 추가).
+                        else:
+                            # elsewhere_sockets가 비어있고 recipient_sockets도 비어있으면(오프라인)
+                            # 알림 row만 생성되고 소켓 전송은 없다 - 대신 FCM 푸시를 발송한다.
+                            fcm_service.send_new_message_push(db, recipient_id, room_id, message)
     except WebSocketDisconnect:
         pass
     finally:
