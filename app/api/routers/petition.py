@@ -492,11 +492,13 @@ def temp_save_petition(
             detail="존재하지 않는 민원입니다."
         )
 
-    # 2. 권한 확인 (담당자만 가능)
-    if str(petition.assignee_user_id) != str(current_user.user_id):
+    # 2. 권한 확인 (현재 담당자)
+    is_current_assignee = petition.assignee_user_id and str(petition.assignee_user_id) == str(current_user.user_id)
+
+    if not (is_current_assignee):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="이 민원을 수정할 권한이 없습니다. (담당자만 가능)"
+            detail="이 민원을 수정할 권한이 없습니다."
         )
 
     # 3. 답변 내용 업데이트
@@ -504,16 +506,25 @@ def temp_save_petition(
         petition.manual_answer = manualAnswer
 
     # 4. 담당자 변경 처리
-    if assigneeUserId and str(assigneeUserId) != str(petition.assignee_user_id):
-        # assigneeUserId를 문자열로 변환하여 DB 조회 및 저장을 일관성 있게 처리합니다.
-        new_assignee_id_str = str(assigneeUserId)
-        new_assignee = db.query(User).filter(User.user_id == new_assignee_id_str).first()
-        if not new_assignee:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="새로 지정할 담당자를 찾을 수 없습니다."
-            )
-        petition.assignee_user_id = new_assignee_id_str
+    # assigneeUserId가 form-data에 포함된 경우에만 처리합니다.
+    if assigneeUserId is not None:
+        # Case 1: 담당자 지정 해제 (프론트엔드에서 빈 문자열 "" 전송)
+        if assigneeUserId == "":
+            if petition.assignee_user_id is not None:
+                petition.assignee_user_id = None
+        # Case 2: 담당자 신규 지정 또는 변경
+        else:
+            new_assignee_id = str(assigneeUserId)
+            # DB 값(None 가능)과 Form 값(str)의 안전한 비교를 위해 양쪽 모두 문자열로 변환
+            current_assignee_id_str = str(petition.assignee_user_id) if petition.assignee_user_id is not None else ""
+            if new_assignee_id != current_assignee_id_str:
+                new_assignee = db.query(User).filter(User.user_id == new_assignee_id).first()
+                if not new_assignee:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="새로 지정할 담당자를 찾을 수 없습니다."
+                    )
+                petition.assignee_user_id = new_assignee_id
 
     # 5. 상태 변경 ('대기중' -> '처리중')
     if petition.status_code == "01":
@@ -576,11 +587,14 @@ def answer_petition(
             detail="존재하지 않는 민원입니다."
         )
 
-    # 2. 권한 확인 (담당자만 가능)
-    if str(petition.assignee_user_id) != str(current_user.user_id):
+    # 2. 권한 확인 (관리자 또는 담당자만 가능)
+    is_admin = current_user.system_role_code == '02'
+    is_current_assignee = petition.assignee_user_id and str(petition.assignee_user_id) == str(current_user.user_id)
+
+    if not (is_admin or is_current_assignee):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="이 민원에 답변할 권한이 없습니다. (담당자만 가능)"
+            detail="이 민원에 답변할 권한이 없습니다."
         )
 
     # 3. 이미 완료된 민원인지 확인
