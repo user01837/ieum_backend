@@ -142,6 +142,8 @@ def get_knowledge_list(
         func.count(KnowledgeLog.log_id).label("log_count")
     ).filter(KnowledgeLog.is_deleted == 0).group_by(KnowledgeLog.knowledge_id).subquery()
 
+    # 최종 수정자 이름 조회를 위해 User 모델에 별칭 부여
+
     # 기본 쿼리
     query = db.query(
         Knowledge,
@@ -151,7 +153,7 @@ def get_knowledge_list(
         Department.name.label("department_name")
     ).outerjoin(
         Task, Knowledge.task_id == Task.task_id
-    ).outerjoin( # User 테이블과 outerjoin을 유지합니다.
+    ).outerjoin(
         User, Knowledge.created_by == User.user_id
     ).outerjoin(
         log_count_subquery, Knowledge.knowledge_id == log_count_subquery.c.knowledge_id
@@ -609,10 +611,10 @@ def update_knowledge(
     if not knowledge_to_update:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="수정할 지식 카드를 찾을 수 없습니다.")
 
-    # 2. 수정 권한 확인 (작성자 또는 관리자만 가능)
+    # 2. 수정 권한 확인 (관리자 또는 해당 부서원만 가능)
     is_admin = current_user.system_role_code == '02'
-    is_creator = str(knowledge_to_update.created_by) == str(current_user.user_id)
-    if not (is_admin or is_creator):
+    is_department_member = knowledge_to_update.department_code == current_user.department_code
+    if not (is_admin or is_department_member):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="이 지식 카드를 수정할 권한이 없습니다.")
 
     # 3. 텍스트 필드 업데이트
