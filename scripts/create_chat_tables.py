@@ -8,4 +8,4 @@ from app.models import chat, notification  # noqa: F401  (Base.metadata 등록�
 
 if __name__ == "__main__":
     Base.metadata.create_all(bind=engine)
-    print("완료: CHAT_ROOM, CHAT_ROOM_MEMBER, CHAT_MESSAGE, NOTIFICATION 테이블 생성/확인")
+    print("완료: CHAT_ROOM, CHAT_ROOM_MEMBER, CHAT_MESSAGE, NOTIFICATION, DEVICE_TOKEN 테이블 생성/확인")

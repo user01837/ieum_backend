@@ -12,3 +12,12 @@ class Notification(Base):
     message_id = Column(Integer, ForeignKey("CHAT_MESSAGE.message_id"), nullable=True)
     is_read = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+
+class DeviceToken(Base):
+    __tablename__ = "DEVICE_TOKEN"
+
+    token_id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String(50), ForeignKey("USER.user_id"), nullable=False)
+    fcm_token = Column(String(255), nullable=False, unique=True)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
