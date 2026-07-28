@@ -13,8 +13,13 @@ router = APIRouter()
 
 
 async def _broadcast(sockets: set[WebSocket], payload: dict) -> None:
+    data = json.dumps(payload)
     for ws in sockets:
-        await ws.send_text(json.dumps(payload))
+        try:
+            await ws.send_text(data)
+        except Exception:
+            # 이미 끊겼지만 아직 정리되지 않은 소켓 하나 때문에 나머지 전송이 중단되지 않도록 한다.
+            continue
 
 
 def _authenticate_ws_user(token: str, db: Session) -> User | None:
@@ -54,7 +59,7 @@ async def chat_ws(websocket: WebSocket, token: str = Query(...), db: Session = D
             elif msg_type == "send_message":
                 room_id = data.get("room_id")
                 content = (data.get("content") or "").strip()
-                if not room_id or not content:
+                if not isinstance(room_id, int) or not content:
                     continue
                 if not chat_service.is_room_member(db, room_id, user.user_id):
                     continue
@@ -82,9 +87,11 @@ async def chat_ws(websocket: WebSocket, token: str = Query(...), db: Session = D
                     elsewhere_sockets = recipient_sockets - viewing_sockets
 
                     if viewing_sockets:
+                        # 보고 있는 탭이 하나라도 있으면 이 방을 보는 중 -> 다른 탭에도 동기화만, 알림 없음
                         await _broadcast(viewing_sockets, message_payload)
-
-                    if elsewhere_sockets or not recipient_sockets:
+                        if elsewhere_sockets:
+                            await _broadcast(elsewhere_sockets, message_payload)
+                    else:
                         notification = chat_service.create_notification(
                             db, recipient_id, room_id, message.message_id
                         )
@@ -100,7 +107,8 @@ async def chat_ws(websocket: WebSocket, token: str = Query(...), db: Session = D
                             }
                             await _broadcast(elsewhere_sockets, message_payload)
                             await _broadcast(elsewhere_sockets, notif_payload)
-                        # recipient_sockets가 아예 없는 경우(오프라인)의 FCM 발송은 Task 7에서 추가
+                        # elsewhere_sockets가 비어있고 recipient_sockets도 비어있으면(오프라인) 알림 row만 생성되고
+                        # 소켓 전송은 없다(FCM 발송은 Task 7에서 추가).
     except WebSocketDisconnect:
         pass
     finally:
