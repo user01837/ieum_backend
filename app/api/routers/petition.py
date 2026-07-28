@@ -93,6 +93,7 @@ class ExternalPetitionRequest(BaseModel):
 class ExternalPetitionResponse(BaseModel):
     petitionId: int
     departmentCode: str
+    dueDate: str
 
 # --- 라우터 ---
 
@@ -208,6 +209,7 @@ def create_external_petition(
                 open_counts[uid] = cnt
             assignee_user_id = min(open_counts, key=open_counts.get)
 
+    now = datetime.now()
     petition = Petition(
         title=req.title,
         content=req.content,
@@ -215,8 +217,8 @@ def create_external_petition(
         task_id=task_id,
         assignee_user_id=assignee_user_id,
         status_code="01",
-        received_at=datetime.now(),
-        due_date=datetime.now() + timedelta(days=14),
+        received_at=now,
+        due_date=now + timedelta(days=14),
     )
     db.add(petition)
     db.commit()
@@ -225,6 +227,7 @@ def create_external_petition(
     return ExternalPetitionResponse(
         petitionId=petition.petition_id,
         departmentCode=department_code,
+        dueDate=petition.due_date.isoformat(),
     )
 
 @router.get(
