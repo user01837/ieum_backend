@@ -22,8 +22,9 @@ from app.services.s3_service import upload_file_to_s3
 
 STATUS_MAP = {
     "01": "대기중",
-    "02": "처리중",
-    "03": "완료",
+    "02": "확인중",
+    "03": "처리중",
+    "04": "완료",
 }
 
 POSITION_MAP = {
@@ -200,7 +201,7 @@ def create_external_petition(
                 db.query(Petition.assignee_user_id, func.count(Petition.petition_id))
                 .filter(
                     Petition.assignee_user_id.in_(candidate_ids),
-                    Petition.status_code != "03",
+                    Petition.status_code != "04",
                 )
                 .group_by(Petition.assignee_user_id)
                 .all()
@@ -238,7 +239,7 @@ def create_external_petition(
 )
 def get_petitions(
     scope: str = Query(..., description="조회 범위: ALL(부서전체) | MY(내 민원) | TASK(업무별) | PREDECESSOR(전임자)"),
-    petition_status: str = Query(..., alias="status", description="민원 상태 필터: ALL | 01(대기중) | 02(임시저장) | 03(완료)"),
+    petition_status: str = Query(..., alias="status", description="민원 상태 필터: ALL | 01(대기중) | 02(페이지를 열어보았을 때 = 확인중) | 03(임시저장 = 처리중) |03(완료)"),
     page: int = Query(..., description="페이지 번호 (0부터 시작)"),
     size: int = Query(10, description="페이지 크기, 기본값 10"),
     sort: Optional[str] = Query(None, description="정렬 옵션: incomplete_first (미완료 우선) | due_date_impending (처리기한 임박순)"),
@@ -305,7 +306,7 @@ def get_petitions(
         # 보안/개인정보 보호 규칙 적용:
         # 관리자가 아닌 경우, 자신에게 할당된 민원 또는 '완료' 상태의 민원만 볼 수 있음
         query = query.filter(
-            or_(Petition.assignee_user_id == current_user.user_id, Petition.status_code == "03")
+            or_(Petition.assignee_user_id == current_user.user_id, Petition.status_code == "04")
         )
     
     # 3. 상태(status)에 따른 필터링
@@ -322,15 +323,15 @@ def get_petitions(
 
     # 5. 실제 데이터 조회 (정렬 및 페이지네이션 적용)
     if sort == 'incomplete_first':
-        # 미완료(status_code != '03') 민원을 우선 정렬하고, 그 다음 최신순으로 정렬
-        query = query.order_by((Petition.status_code != '03').desc(), Petition.created_at.desc())
+        # 미완료(status_code != '04') 민원을 우선 정렬하고, 그 다음 최신순으로 정렬
+        query = query.order_by((Petition.status_code != '04').desc(), Petition.created_at.desc())
     elif sort == 'due_date_impending':
         # 미완료 민원을 우선하고, 그 안에서 처리기한이 임박한 순(오름차순)으로 정렬합니다.
         # 처리기한이 없는 민원은 각 그룹의 뒤로 보냅니다.
         # MySQL은 `NULLS LAST` 구문을 지원하지 않으므로, `due_date`가 NULL인 경우를
         # 별도로 처리하여 정렬 순서의 뒤로 보냅니다.
         incompleteness_order = case(
-            (Petition.status_code != '03', 1),
+            (Petition.status_code != '04', 1),
             else_=2
         )
         # `Petition.due_date.is_(None)`은 due_date가 NULL이면 True(1), 아니면 False(0)를 반환합니다.
@@ -411,7 +412,7 @@ def get_petition_detail(
     # 3. 접근 권한 확인
     is_admin = current_user.system_role_code == '02'
     is_owner = p.assignee_user_id is not None and str(p.assignee_user_id) == str(current_user.user_id)
-    is_completed = p.status_code == "03"
+    is_completed = p.status_code == "04"
 
     # 관리자가 아니고, 담당자도 아니며, 완료 상태도 아니면 접근 불가
     if not (is_admin or is_owner or is_completed):
@@ -419,6 +420,18 @@ def get_petition_detail(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="이 민원에 접근할 권한이 없습니다."
         )
+
+    # '대기중'('01') 상태인 민원을 '담당자'가 열람하면 '확인중'('02')으로 상태를 변경.
+    # only 담당자가 처음 민원을 확인할 때만 적용.
+    if p.status_code == "01" and is_owner:
+        # 동시성 문제를 방지하기 위해 row-level lock을 걸고 다시 조회하여 업데이트합니다.
+        petition_to_update = db.query(Petition).filter(Petition.petition_id == complaintId).with_for_update().first()
+        # 다시 확인하는 이유는, 그 사이에 다른 요청에 의해 상태가 변경되었을 수 있기 때문입니다.
+        if petition_to_update and petition_to_update.status_code == "01":
+            petition_to_update.status_code = "02"
+            db.commit()
+            # 응답에 최신 상태를 반영하기 위해 기존 객체의 상태도 업데이트합니다.
+            p.status_code = "02"
 
     # 4. 담당자 정보 구성
     assignee_info = None
@@ -486,7 +499,8 @@ def temp_save_petition(
 
     - **multipart/form-data** 형식으로 요청해야 합니다.
     - 현재 민원의 담당자만 이 작업을 수행할 수 있습니다.
-    - 임시저장 시 민원 상태가 '대기중'('01')이었다면 '처리중'('02')으로 변경됩니다.
+    - 담당자가 변경되면 민원 상태는 '대기중'('01')으로 변경됩니다.
+    - 담당자 변경 없이 임시저장 시, 민원 상태가 '확인중'('02')이었다면 '처리중'('03')으로 변경됩니다.
     """
     # 0. 요청 유효성 검사: 업데이트할 내용이 하나라도 있는지 확인
     if manualAnswer is None and assigneeUserId is None and not files:
@@ -518,18 +532,21 @@ def temp_save_petition(
         petition.manual_answer = manualAnswer
 
     # 4. 담당자 변경 처리
+    assignee_has_changed = False
     # assigneeUserId가 form-data에 포함된 경우에만 처리합니다.
     if assigneeUserId is not None:
         # Case 1: 담당자 지정 해제 (프론트엔드에서 빈 문자열 "" 전송)
         if assigneeUserId == "":
             if petition.assignee_user_id is not None:
                 petition.assignee_user_id = None
+                assignee_has_changed = True
         # Case 2: 담당자 신규 지정 또는 변경
         else:
             new_assignee_id = str(assigneeUserId)
             # DB 값(None 가능)과 Form 값(str)의 안전한 비교를 위해 양쪽 모두 문자열로 변환
             current_assignee_id_str = str(petition.assignee_user_id) if petition.assignee_user_id is not None else ""
             if new_assignee_id != current_assignee_id_str:
+                assignee_has_changed = True
                 new_assignee = db.query(User).filter(User.user_id == new_assignee_id).first()
                 if not new_assignee:
                     raise HTTPException(
@@ -538,9 +555,12 @@ def temp_save_petition(
                     )
                 petition.assignee_user_id = new_assignee_id
 
-    # 5. 상태 변경 ('대기중' -> '처리중')
-    if petition.status_code == "01":
-        petition.status_code = "02"
+    # 5. 상태 변경
+    # 담당자가 변경되면 '대기중'으로, 아니면 '확인중' -> '처리중'으로 변경
+    if assignee_has_changed:
+        petition.status_code = "01"
+    elif petition.status_code == "02":
+        petition.status_code = "03"
 
     # 6. 첨부파일 처리
     if files:
@@ -588,7 +608,7 @@ def answer_petition(
 
     - **multipart/form-data** 형식으로 요청해야 합니다.
     - 현재 민원의 담당자만 이 작업을 수행할 수 있습니다.
-    - 답변이 제출되면 `answered_at`이 기록되고 상태 코드가 '03'(완료)으로 변경됩니다.
+    - 답변이 제출되면 `answered_at`이 기록되고 상태 코드가 '04'(완료)으로 변경됩니다.
     """
     # 1. 민원 조회 (동시 수정을 방지하기 위해 비관적 잠금 사용)
     petition = db.query(Petition).filter(Petition.petition_id == complaintId).with_for_update().first()
@@ -610,7 +630,7 @@ def answer_petition(
         )
 
     # 3. 이미 완료된 민원인지 확인
-    if petition.status_code == '03':
+    if petition.status_code == '04':
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="이미 답변이 완료된 민원입니다."
@@ -618,7 +638,7 @@ def answer_petition(
 
     # 4. 답변 내용, 상태, 답변 시간 업데이트
     petition.manual_answer = manualAnswer
-    petition.status_code = "03"
+    petition.status_code = "04"
     petition.answered_at = datetime.now()
 
     # 5. 첨부파일 처리
@@ -698,7 +718,7 @@ def delete_attachment(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="첨부파일에 연결된 민원을 찾을 수 없습니다.")
 
     # 3. 권한 확인 (담당자이고, 민원이 완료되지 않은 상태여야 함)
-    if str(petition.assignee_user_id) != str(current_user.user_id) or petition.status_code == '03':
+    if str(petition.assignee_user_id) != str(current_user.user_id) or petition.status_code == '04':
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="이 첨부파일을 삭제할 권한이 없습니다."
