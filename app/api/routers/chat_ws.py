@@ -110,6 +110,13 @@ async def _handle_send_message(user_id: str, room_id: int, content: str) -> None
                         # 알림 row만 생성되고 소켓 전송은 없다 - 대신 FCM 푸시를 발송한다.
                         # messaging.send()는 동기 HTTPS 호출(토큰당 100~300ms)이라
                         # 이벤트 루프에서 직접 호출하면 다른 모든 사용자의 트래픽이 멈춘다.
+                        #
+                        # 바로 위 create_notification의 commit이 (sessionmaker 기본값인
+                        # expire_on_commit=True 때문에) message를 포함한 세션의 모든 객체를
+                        # 만료시킨다. 그대로 넘기면 워커 스레드에서 message.content를 읽는 순간
+                        # lazy load SELECT가 그쪽 스레드에서 나가는데, Session은 스레드 안전하지
+                        # 않다. 세션을 소유한 이 스레드에서 미리 접근해 값을 다시 적재한다.
+                        _ = message.content, message.message_id
                         await run_in_threadpool(
                             fcm_service.send_new_message_push, db, recipient_id, room_id, message
                         )

@@ -178,6 +178,52 @@ def test_ws_multi_tab_recipient_viewing_in_one_tab_gets_no_phantom_notification(
     assert db_session.query(Notification).filter(Notification.user_id == "emp002").count() == 0
 
 
+def test_ws_fcm_push_receives_message_with_attributes_already_loaded(client, make_user, monkeypatch):
+    """스레드풀로 넘어가는 message는 lazy load가 필요 없는 상태여야 한다.
+
+    바로 앞의 create_notification 커밋이 (sessionmaker 기본값 expire_on_commit=True)
+    message를 만료시키므로, 그대로 넘기면 워커 스레드에서 SELECT가 나간다. 이는 세션을
+    소유하지 않은 스레드에서 Session을 쓰는 것이 된다(Session은 스레드 안전하지 않다).
+    """
+    import time
+
+    from sqlalchemy import inspect as sa_inspect
+
+    from app.services import fcm_service
+
+    other = make_user("emp002")  # 소켓을 열지 않으므로 오프라인 -> FCM 경로
+    room = client.post("/chat/rooms", json={"member_ids": [other.user_id]}).json()
+    token = _token_for(client.current_user_holder["user"])
+
+    recorded = {}
+
+    def _fake_push(db, recipient_id, room_id, message):
+        state = sa_inspect(message)
+        # 속성을 읽으면 그 순간 다시 적재되므로, 만료 여부를 먼저 캡처한다.
+        recorded["expired"] = state.expired
+        recorded["unloaded"] = set(state.unloaded)
+        recorded["content"] = message.content
+        recorded["message_id"] = message.message_id
+
+    monkeypatch.setattr(fcm_service, "send_new_message_push", _fake_push)
+
+    with client.websocket_connect(f"/ws/chat?token={token}") as ws:
+        ws.send_text(json.dumps({"type": "send_message", "room_id": room["room_id"], "content": "안녕"}))
+        ws.receive_text()  # echo
+
+    for _ in range(100):
+        if "expired" in recorded:
+            break
+        time.sleep(0.02)
+
+    assert "expired" in recorded, "FCM 발송이 호출되지 않았다"
+    assert recorded["expired"] is False
+    assert "content" not in recorded["unloaded"]
+    assert "message_id" not in recorded["unloaded"]
+    assert recorded["content"] == "안녕"
+    assert isinstance(recorded["message_id"], int)
+
+
 def test_ws_fcm_push_runs_off_the_event_loop_thread(client, make_user, monkeypatch):
     """동기 HTTPS 호출인 FCM 발송이 이벤트 루프를 막지 않고 스레드풀에서 실행되어야 한다."""
     import time
