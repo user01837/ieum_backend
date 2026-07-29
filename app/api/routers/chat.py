@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.api.routers.auth import get_current_user
 from app.models.user import User
-from app.models.chat import ChatRoomMember
+from app.models.chat import ChatRoom, ChatRoomMember
 from app.services import chat_service
 
 router = APIRouter()
@@ -32,6 +32,10 @@ class RoomListItem(BaseModel):
     last_message: Optional[str]
     last_message_at: Optional[str]
     unread_count: int
+
+
+class AddMembersRequest(BaseModel):
+    member_ids: list[str] = Field(..., min_length=1, description="추가할 참여자 사번 목록")
 
 
 @router.post("/rooms", response_model=RoomResponse, status_code=status.HTTP_201_CREATED)
@@ -112,3 +116,48 @@ def mark_room_read_endpoint(
     if not chat_service.is_room_member(db, room_id, str(current_user.user_id)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="해당 채팅방의 멤버가 아닙니다.")
     chat_service.mark_room_read(db, room_id, str(current_user.user_id))
+
+
+@router.post("/rooms/{room_id}/members", response_model=RoomResponse)
+def add_room_members(
+    room_id: int,
+    req: AddMembersRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    room = db.query(ChatRoom).filter(ChatRoom.room_id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="존재하지 않는 채팅방입니다.")
+
+    if not chat_service.is_room_member(db, room_id, str(current_user.user_id)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="해당 채팅방의 멤버가 아닙니다.")
+
+    if not room.is_group:
+        raise HTTPException(status_code=400, detail="1:1 채팅방에는 인원을 추가할 수 없습니다.")
+
+    invalid_ids = [
+        uid for uid in req.member_ids
+        if not db.query(User.user_id).filter(User.user_id == uid).first()
+    ]
+    if invalid_ids:
+        raise HTTPException(status_code=400, detail=f"존재하지 않는 사용자: {invalid_ids}")
+
+    chat_service.add_members_to_room(db, room_id, req.member_ids)
+
+    member_ids = [
+        str(m.user_id)
+        for m in db.query(ChatRoomMember).filter(ChatRoomMember.room_id == room_id).all()
+    ]
+    return RoomResponse(room_id=room.room_id, name=room.name, is_group=room.is_group, member_ids=member_ids)
+
+
+@router.delete("/rooms/{room_id}", status_code=status.HTTP_204_NO_CONTENT)
+def leave_room_endpoint(
+    room_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not chat_service.is_room_member(db, room_id, str(current_user.user_id)):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="존재하지 않는 채팅방이거나 이미 나간 방입니다.")
+
+    chat_service.leave_room(db, room_id, str(current_user.user_id))
