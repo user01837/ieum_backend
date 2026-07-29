@@ -15,3 +15,4 @@ class Announcement(Base):
     updated_by      = Column(Integer, ForeignKey("USER.user_id"), nullable=True)
     created_at      = Column(DateTime, nullable=False, server_default=func.now())
     updated_at      = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+    department_code = Column(String(10), ForeignKey("DEPARTMENT.department_code"), nullable=True)
