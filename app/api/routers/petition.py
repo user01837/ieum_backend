@@ -15,6 +15,7 @@ from app.models.department import Department
 from app.models.task_assignee import TaskAssignee
 from app.api.routers.auth import get_current_user
 from app.models.petition_attachment import PetitionAttachment
+from app.models.petition_assignee_history import PetitionAssigneeHistory
 from app.core.config import settings
 from app.services.s3_service import upload_file_to_s3
 
@@ -535,25 +536,35 @@ def temp_save_petition(
     assignee_has_changed = False
     # assigneeUserId가 form-data에 포함된 경우에만 처리합니다.
     if assigneeUserId is not None:
-        # Case 1: 담당자 지정 해제 (프론트엔드에서 빈 문자열 "" 전송)
-        if assigneeUserId == "":
-            if petition.assignee_user_id is not None:
+        original_assignee_id = petition.assignee_user_id
+        new_assignee_id_str = str(assigneeUserId)
+        original_assignee_id_str = str(original_assignee_id) if original_assignee_id is not None else ""
+
+        # 담당자가 실제로 변경되었는지 확인
+        if new_assignee_id_str != original_assignee_id_str:
+            assignee_has_changed = True
+            to_user_id = None
+
+            if new_assignee_id_str == "": # 담당자 지정 해제
                 petition.assignee_user_id = None
-                assignee_has_changed = True
-        # Case 2: 담당자 신규 지정 또는 변경
-        else:
-            new_assignee_id = str(assigneeUserId)
-            # DB 값(None 가능)과 Form 값(str)의 안전한 비교를 위해 양쪽 모두 문자열로 변환
-            current_assignee_id_str = str(petition.assignee_user_id) if petition.assignee_user_id is not None else ""
-            if new_assignee_id != current_assignee_id_str:
-                assignee_has_changed = True
-                new_assignee = db.query(User).filter(User.user_id == new_assignee_id).first()
+            else: # 담당자 신규 지정 또는 변경
+                new_assignee = db.query(User).filter(User.user_id == new_assignee_id_str).first()
                 if not new_assignee:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="새로 지정할 담당자를 찾을 수 없습니다."
                     )
-                petition.assignee_user_id = new_assignee_id
+                petition.assignee_user_id = new_assignee_id_str
+                to_user_id = new_assignee_id_str
+
+            # 담당자 변경 이력 기록
+            history_log = PetitionAssigneeHistory(
+                petition_id=complaintId,
+                from_user_id=original_assignee_id,
+                to_user_id=to_user_id,
+                change_type="01", # "01": 수동 변경
+            )
+            db.add(history_log)
 
     # 5. 상태 변경
     # 담당자가 변경되면 '대기중'으로, 아니면 '확인중' -> '처리중'으로 변경
