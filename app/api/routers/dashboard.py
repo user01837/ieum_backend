@@ -20,6 +20,7 @@ router = APIRouter()
 class ComplaintSummaryResponse(BaseModel):
     total: int
     waiting: int
+    checked: int
     inProgress: int
     completed: int
 
@@ -44,12 +45,14 @@ def get_complaints_summary(
 
     total = query.count()
     waiting = query.filter(Petition.status_code == "01").count()
-    in_progress = query.filter(Petition.status_code == "02").count()
-    completed = query.filter(Petition.status_code == "03").count()
+    checked = query.filter(Petition.status_code == "02").count()
+    in_progress = query.filter(Petition.status_code == "03").count()
+    completed = query.filter(Petition.status_code == "04").count()
 
     return ComplaintSummaryResponse(
         total=total,
         waiting=waiting,
+        checked=checked,
         inProgress=in_progress,
         completed=completed,
     )
@@ -82,7 +85,7 @@ def get_due_soon_complaints(
         .outerjoin(User, Petition.assignee_user_id == User.user_id)
         .filter(
             Petition.department_code == target_dept,
-            Petition.status_code != "03",
+            Petition.status_code != "04",
             Petition.due_date != None,
             Petition.due_date >= today,
             Petition.due_date <= three_days_later,
