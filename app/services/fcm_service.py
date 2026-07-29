@@ -10,17 +10,26 @@ from app.models.notification import DeviceToken
 logger = logging.getLogger(__name__)
 
 _initialized = False
+# 초기화가 한 번 실패하면 다시 시도하지 않는다. 자격증명 경로가 잘못된 경우
+# 오프라인 수신자가 생길 때마다 (블로킹) 파일 읽기 + 전체 트레이스백 로깅이 반복되기 때문이다.
+_init_failed = False
 
 
 def init_firebase() -> None:
-    global _initialized
-    if _initialized or not settings.FIREBASE_CREDENTIALS_PATH:
+    global _initialized, _init_failed
+    if _initialized or _init_failed or not settings.FIREBASE_CREDENTIALS_PATH:
         return
     try:
         cred = credentials.Certificate(settings.FIREBASE_CREDENTIALS_PATH)
-        firebase_admin.initialize_app(cred)
+        try:
+            firebase_admin.initialize_app(cred)
+        except ValueError:
+            # 기본 앱이 이미 존재하면(모듈 재임포트 등) ValueError가 난다.
+            # 이는 정상 상태이므로 실패가 아니라 초기화 완료로 취급한다.
+            firebase_admin.get_app()
         _initialized = True
     except Exception:
+        _init_failed = True
         logger.exception("Firebase 초기화 실패 - FCM 발송이 비활성화됩니다.")
 
 
