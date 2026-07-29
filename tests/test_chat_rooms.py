@@ -45,3 +45,28 @@ def test_list_rooms_returns_my_rooms(client, make_user):
 def test_create_room_rejects_self_only_member(client):
     res = client.post("/chat/rooms", json={"member_ids": ["emp001"]})
     assert res.status_code == 400
+
+
+def test_list_rooms_last_message_uses_message_id_order_on_created_at_tie(client, make_user, db_session):
+    """created_at(초 단위)이 같은 메시지들 사이에서도 마지막 메시지 미리보기가 흔들리면 안 된다.
+
+    페이지네이션(get_messages)이 message_id 기준이므로 미리보기도 같은 기준이어야 한다.
+    """
+    from datetime import datetime
+
+    from app.models.chat import ChatMessage
+
+    other = make_user("emp002", "이직원")
+    room = client.post("/chat/rooms", json={"member_ids": [other.user_id]}).json()
+
+    same_second = datetime(2026, 7, 28, 12, 0, 0)
+    for content in ["첫 번째", "두 번째", "마지막"]:
+        db_session.add(
+            ChatMessage(
+                room_id=room["room_id"], sender_id="emp001", content=content, created_at=same_second
+            )
+        )
+        db_session.commit()
+
+    rooms = client.get("/chat/rooms").json()
+    assert rooms[0]["last_message"] == "마지막"

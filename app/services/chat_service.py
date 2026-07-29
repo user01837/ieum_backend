@@ -57,7 +57,9 @@ def list_rooms_for_user(db: Session, user_id: str) -> list[dict]:
         last_message = (
             db.query(ChatMessage)
             .filter(ChatMessage.room_id == room.room_id)
-            .order_by(ChatMessage.created_at.desc())
+            # created_at(MySQL DATETIME)은 초 단위라 같은 초에 들어온 메시지끼리 순서가 갈리지 않는다.
+            # 페이지네이션(get_messages)과 동일하게 autoincrement PK 기준으로 정렬한다.
+            .order_by(ChatMessage.message_id.desc())
             .first()
         )
         result.append({
