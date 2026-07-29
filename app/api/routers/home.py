@@ -11,6 +11,7 @@ from app.models.petition import Petition
 from app.models.project import Project
 from app.models.project_member import ProjectMember
 from app.models.department import Department
+from app.models.announcement import Announcement
 
 router = APIRouter()
 
@@ -106,8 +107,21 @@ def get_home_dashboard(
 
     my_petition_summary = MyPetitionSummary(total=total, waiting=waiting, checked=checked, inProgress=in_progress, completed=completed)
 
-    # 2. 공지사항 (추후 구현)
-    announcements = []
+    # 2. 공지사항 (최근 4개)
+    announcement_results = db.query(Announcement).filter(
+        Announcement.is_deleted == False
+    ).order_by(
+        Announcement.is_pinned.desc(),
+        Announcement.created_at.desc()
+    ).limit(4).all()
+
+    announcements = [
+        AnnouncementItem(
+            id=a.announcement_id,
+            category="공지",
+            title=a.title,
+            date=a.created_at.date().isoformat()) for a in announcement_results
+    ]
 
     # 3. 긴급 민원 (D-3 이내, 최대 5개)
     three_days_later = today + timedelta(days=3)
