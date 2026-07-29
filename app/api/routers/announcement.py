@@ -5,12 +5,14 @@ import math
 from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
 from app.db.session import get_db
 from app.api.routers.auth import get_current_user
 from app.models.user import User
 from app.models.announcement import Announcement
 from app.models.notification import Notification, DeviceToken
+from app.models.department import Department
 from app.services import fcm_service
 
 router = APIRouter()
@@ -24,6 +26,16 @@ def check_write_permission(user: User):
     is_head  = user.position_code == "01"
     if not (is_admin or is_head):
         raise HTTPException(status_code=403, detail="작성 권한이 없습니다. 관리자 또는 부서장만 가능합니다.")
+
+# ----------------------------------------------------------------
+# 유틸
+# ----------------------------------------------------------------
+
+def get_department_name(department_code: Optional[str], db: Session) -> str:
+    if not department_code:
+        return "전체"
+    dept = db.query(Department).filter(Department.department_code == department_code).first()
+    return dept.name if dept else ""
 
 # ----------------------------------------------------------------
 # Pydantic 스키마
@@ -44,6 +56,7 @@ class AnnouncementListItem(BaseModel):
     title:          str
     isPinned:       bool
     createdByName:  str
+    departmentName:  Optional[str]
     createdAt:      str
 
 class AnnouncementListResponse(BaseModel):
@@ -60,6 +73,7 @@ class AnnouncementDetailResponse(BaseModel):
     isPinned:       bool
     createdByName:  str
     updatedByName:  Optional[str]
+    departmentName:  Optional[str]
     createdAt:      str
     updatedAt:      str
 
@@ -72,10 +86,22 @@ class AnnouncementDetailResponse(BaseModel):
 def get_announcement_list(
     page: int = Query(0, ge=0),
     size: int = Query(10, ge=1),
+    keyword: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    query = db.query(Announcement).filter(Announcement.is_deleted == False)
+
+
+    query = db.query(Announcement).filter(
+        Announcement.is_deleted == False,
+        or_(
+            Announcement.department_code == None,
+            Announcement.department_code == current_user.department_code,
+        )
+    )
+    if keyword:
+        query = query.filter(Announcement.title.like(f"%{keyword}%"))
+
     query = query.order_by(Announcement.is_pinned.desc(), Announcement.created_at.desc())
 
     total_elements = query.count()
@@ -90,6 +116,7 @@ def get_announcement_list(
             title=a.title,
             isPinned=a.is_pinned,
             createdByName=creator.name if creator else "",
+            departmentName=get_department_name(a.department_code, db),
             createdAt=a.created_at.isoformat(),
         ))
 
@@ -125,6 +152,7 @@ def get_announcement_detail(
         isPinned=a.is_pinned,
         createdByName=creator.name if creator else "",
         updatedByName=updater.name if updater else None,
+        departmentName=get_department_name(a.department_code, db),
         createdAt=a.created_at.isoformat(),
         updatedAt=a.updated_at.isoformat(),
     )
@@ -144,6 +172,7 @@ def create_announcement(
         content=body.content,
         is_pinned=body.is_pinned,
         created_by=current_user.user_id,
+        department_code=None if current_user.system_role_code == "02" else current_user.department_code,
     )
     db.add(a)
     db.commit()
@@ -217,3 +246,17 @@ def delete_announcement(
     db.commit()
 
     return {"message": "삭제되었습니다."}
+
+# 6. 공지 알림 읽음 처리
+@router.post("/read-notifications", status_code=status.HTTP_200_OK)
+def read_announcement_notifications(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    db.query(Notification).filter(
+        Notification.user_id == current_user.user_id,
+        Notification.type == "ANNOUNCEMENT",
+        Notification.is_read == False,
+    ).update({"is_read": True})
+    db.commit()
+    return {"message": "읽음 처리 완료"}
