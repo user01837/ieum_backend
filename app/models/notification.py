@@ -10,6 +10,7 @@ class Notification(Base):
     type = Column(String(20), nullable=False)
     room_id = Column(Integer, ForeignKey("CHAT_ROOM.room_id"), nullable=True)
     message_id = Column(Integer, ForeignKey("CHAT_MESSAGE.message_id"), nullable=True)
+    announcement_id = Column(Integer, ForeignKey("ANNOUNCEMENT.announcement_id"), nullable=True)
     is_read = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
 

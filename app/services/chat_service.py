@@ -52,7 +52,8 @@ def list_rooms_for_user(db: Session, user_id: str) -> list[dict]:
     result = []
     for room in rooms:
         member_ids = [
-            m.user_id for m in db.query(ChatRoomMember).filter(ChatRoomMember.room_id == room.room_id).all()
+            str(m.user_id)
+            for m in db.query(ChatRoomMember).filter(ChatRoomMember.room_id == room.room_id).all()
         ]
         last_message = (
             db.query(ChatMessage)
@@ -85,10 +86,13 @@ def is_room_member(db: Session, room_id: int, user_id: str) -> bool:
 
 
 def other_member_ids(db: Session, room_id: int, sender_id: str) -> list[str]:
+    # ChatRoomMember.user_id는 실제 DB에서 int로 저장되어 있어(USER.user_id가 int) ORM이
+    # 읽어올 때 Python int로 돌아온다. sender_id(문자열)와 비교하려면 양쪽을 str로 맞춰야
+    # 발신자 본인을 정확히 제외할 수 있다.
     return [
-        m.user_id
+        str(m.user_id)
         for m in db.query(ChatRoomMember).filter(ChatRoomMember.room_id == room_id).all()
-        if m.user_id != sender_id
+        if str(m.user_id) != str(sender_id)
     ]
 
 

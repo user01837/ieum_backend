@@ -48,13 +48,16 @@ def create_room(
         raise HTTPException(status_code=400, detail=f"존재하지 않는 사용자: {invalid_ids}")
 
     # 생성자를 제외한 실제 참여자가 있는지 확인
-    actual_member_ids = [uid for uid in req.member_ids if uid != current_user.user_id]
+    # USER.user_id는 실제 DB에서 int라 current_user.user_id도 ORM에서 int로 돌아온다.
+    # req.member_ids(문자열 목록)와 비교하려면 str로 맞춰야 한다.
+    actual_member_ids = [uid for uid in req.member_ids if uid != str(current_user.user_id)]
     if not actual_member_ids:
         raise HTTPException(status_code=400, detail="채팅 상대를 1명 이상 지정해야 합니다.")
 
-    room = chat_service.create_room(db, current_user.user_id, req.member_ids, req.name)
+    room = chat_service.create_room(db, str(current_user.user_id), req.member_ids, req.name)
     member_ids = [
-        m.user_id for m in db.query(ChatRoomMember).filter(ChatRoomMember.room_id == room.room_id).all()
+        str(m.user_id)
+        for m in db.query(ChatRoomMember).filter(ChatRoomMember.room_id == room.room_id).all()
     ]
     return RoomResponse(room_id=room.room_id, name=room.name, is_group=room.is_group, member_ids=member_ids)
 
@@ -64,7 +67,7 @@ def list_rooms(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    rooms = chat_service.list_rooms_for_user(db, current_user.user_id)
+    rooms = chat_service.list_rooms_for_user(db, str(current_user.user_id))
     return [RoomListItem(**r) for r in rooms]
 
 
@@ -84,7 +87,7 @@ def get_room_messages(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if not chat_service.is_room_member(db, room_id, current_user.user_id):
+    if not chat_service.is_room_member(db, room_id, str(current_user.user_id)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="해당 채팅방의 멤버가 아닙니다.")
 
     messages = chat_service.get_messages(db, room_id, before_message_id, size)
@@ -92,7 +95,7 @@ def get_room_messages(
         MessageResponse(
             message_id=m.message_id,
             room_id=m.room_id,
-            sender_id=m.sender_id,
+            sender_id=str(m.sender_id),
             content=m.content,
             created_at=m.created_at.isoformat(),
         )
@@ -106,6 +109,6 @@ def mark_room_read_endpoint(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if not chat_service.is_room_member(db, room_id, current_user.user_id):
+    if not chat_service.is_room_member(db, room_id, str(current_user.user_id)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="해당 채팅방의 멤버가 아닙니다.")
-    chat_service.mark_room_read(db, room_id, current_user.user_id)
+    chat_service.mark_room_read(db, room_id, str(current_user.user_id))

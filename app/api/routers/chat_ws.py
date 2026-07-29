@@ -47,7 +47,10 @@ def _resolve_user_id(token: str) -> str | None:
     """인증에만 짧게 세션을 열고, ORM 객체가 아닌 문자열 user_id만 밖으로 내보낸다."""
     with session_factory() as db:
         user = _authenticate_ws_user(token, db)
-        return user.user_id if user is not None else None
+        # USER.user_id는 실제 DB에서 int라 user.user_id도 ORM에서 int로 돌아온다.
+        # 커넥션 매니저 키, JSON payload의 sender_id 등 문자열 컨텍스트에서 계속
+        # 쓰이므로 여기서 한 번에 str로 통일한다.
+        return str(user.user_id) if user is not None else None
 
 
 async def _handle_send_message(user_id: str, room_id: int, content: str) -> None:

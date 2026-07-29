@@ -60,3 +60,30 @@ def send_new_message_push(db: Session, recipient_id: str, room_id: int, message)
                 logger.exception(
                     "FCM 발송 실패 (user_id=%s, token_id=%s)", recipient_id, device_token.token_id
                 )
+
+def send_notice_push(db: Session, announcement_id: int, title: str) -> None:
+    if not settings.FIREBASE_CREDENTIALS_PATH:
+        return
+    init_firebase()
+    if not _initialized:
+        return
+    tokens = db.query(DeviceToken).all()
+    for device_token in tokens:
+        fcm_message = messaging.Message(
+            notification=messaging.Notification(
+                title="새 공지사항",
+                body=title,
+            ),
+            data={"announcement_id": str(announcement_id)},
+            token=device_token.fcm_token,
+        )
+        try:
+            messaging.send(fcm_message)
+        except Exception as exc:
+            if type(exc).__name__ == "UnregisteredError":
+                db.query(DeviceToken).filter(
+                    DeviceToken.token_id == device_token.token_id
+                ).delete()
+                db.commit()
+            else:
+                logger.exception("FCM 발송 실패 (token_id=%s)", device_token.token_id)
