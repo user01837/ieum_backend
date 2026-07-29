@@ -22,7 +22,7 @@
 
 ## Admin API (`/admin`)
 
-관리자 기능 관련 API입니다. (Prefix: `/api/v1/admin`)
+관리자 기능 관련 API입니다. (Prefix: `/admin`)
 
 | Endpoint | Method | 설명 | 요청/응답 |
 | --- | --- | --- | --- |
@@ -34,7 +34,7 @@
 
 ## AI API (`/ai`)
 
-AI 모델 중계 관련 API입니다. (Prefix: `/api/v1/ai`)
+AI 모델 중계 관련 API입니다. (Prefix: `/ai`)
 
 | Endpoint | Method | 설명 | 요청/응답 |
 | --- | --- | --- | --- |
@@ -44,7 +44,7 @@ AI 모델 중계 관련 API입니다. (Prefix: `/api/v1/ai`)
 
 ## Auth API (`/auth`)
 
-인증 및 권한 관련 API입니다. (Prefix: `/api/v1/auth`)
+인증 및 권한 관련 API입니다. (Prefix: `/auth`)
 
 | Endpoint | Method | 설명 | 요청/응답 |
 | --- | --- | --- | --- |
@@ -56,7 +56,7 @@ AI 모델 중계 관련 API입니다. (Prefix: `/api/v1/ai`)
 
 ## Dashboard API (`/dashboard`)
 
-부서 관리 페이지의 대시보드 관련 API입니다. (Prefix: `/api/v1/dashboard`)
+부서 관리 페이지의 대시보드 관련 API입니다. (Prefix: `/dashboard`)
 
 | Endpoint | Method | 설명 | 요청/응답 |
 | --- | --- | --- | --- |
@@ -66,16 +66,24 @@ AI 모델 중계 관련 API입니다. (Prefix: `/api/v1/ai`)
 
 ## Department API (`/departments`)
 
-부서 및 조직도 관련 API입니다. (Prefix: `/api/v1/departments`)
+부서 및 조직도 관련 API입니다. (Prefix: `/departments`)
 
 | Endpoint | Method | 설명 | 요청/응답 |
 | --- | --- | --- | --- |
 | `/` | `GET` | **부서 목록 조회**<br/>- 시스템의 모든 부서 목록을 조회합니다. | **Response:** `List[DepartmentResponse]` |
 | `/{department_code}/members` | `GET` | **특정 부서의 조직원 목록 조회**<br/>- 조직도 표시에 사용됩니다. | **Path:** `department_code`<br/>**Response:** `List[MemberResponse]` |
 
+## Home API (`/home`)
+
+사용자 홈 대시보드 관련 API입니다. (Prefix: `/home`)
+
+| Endpoint | Method | 설명 | 요청/응답 |
+| --- | --- | --- | --- |
+| `/` | `GET` | **사용자 홈 대시보드 데이터 조회**<br/>- 일반 사용자의 홈 화면에 필요한 데이터를 종합하여 반환합니다. | **Response:** `HomeDashboardResponse` |
+
 ## Knowledge API (`/knowledge`)
 
-지식 베이스 관련 API입니다. (Prefix: `/api/v1/knowledge`)
+지식 베이스 관련 API입니다. (Prefix: `/knowledge`)
 
 | Endpoint | Method | 설명 | 요청/응답 |
 | --- | --- | --- | --- |
@@ -92,7 +100,7 @@ AI 모델 중계 관련 API입니다. (Prefix: `/api/v1/ai`)
 
 ## Petition API (`/petitions`)
 
-민원 처리 관련 API입니다. (Prefix: `/api/v1/petitions`)
+민원 처리 관련 API입니다. (Prefix: `/petitions`)
 
 | Endpoint | Method | 설명 | 요청/응답 |
 | --- | --- | --- | --- |
@@ -105,7 +113,7 @@ AI 모델 중계 관련 API입니다. (Prefix: `/api/v1/ai`)
 
 ## Project API (`/projects`)
 
-사업/과제 관리 관련 API입니다. (Prefix: `/api/v1/projects`)
+사업/과제 관리 관련 API입니다. (Prefix: `/projects`)
 
 | Endpoint | Method | 설명 | 요청/응답 |
 | --- | --- | --- | --- |
@@ -120,7 +128,7 @@ AI 모델 중계 관련 API입니다. (Prefix: `/api/v1/ai`)
 
 ## Task API (`/tasks`)
 
-담당 업무(Task) 관리 API입니다. (Prefix: `/api/v1/tasks`)
+담당 업무(Task) 관리 API입니다. (Prefix: `/tasks`)
 
 | Endpoint | Method | 설명 | 요청/응답 |
 | --- | --- | --- | --- |
@@ -133,7 +141,7 @@ AI 모델 중계 관련 API입니다. (Prefix: `/api/v1/ai`)
 
 ## Upload API (`/upload`)
 
-파일 업로드 공통 API입니다. (Prefix: `/api/v1/upload`)
+파일 업로드 공통 API입니다. (Prefix: `/upload`)
 
 | Endpoint | Method | 설명 | 요청/응답 |
 | --- | --- | --- | --- |
@@ -141,9 +149,8 @@ AI 모델 중계 관련 API입니다. (Prefix: `/api/v1/ai`)
 
 ## User API (`/users`)
 
-사용자 검색 관련 API입니다. (Prefix: `/api/v1/users`)
+사용자 검색 관련 API입니다. (Prefix: `/users`)
 
 | Endpoint | Method | 설명 | 요청/응답 |
 | --- | --- | --- | --- |
 | `/search` | `GET` | **사용자 목록 조회 및 검색**<br/>- 범위(같은 과, 전체), 부서, 키워드로 사용자를 검색합니다. | **Query:** `scope`, `departmentCode`, `keyword`<br/>**Response:** `list[UserSearchResult]` |
-
