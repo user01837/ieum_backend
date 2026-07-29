@@ -147,3 +147,26 @@ def create_notification(db: Session, user_id: str, room_id: int, message_id: int
     db.commit()
     db.refresh(notification)
     return notification
+
+
+def add_members_to_room(db: Session, room_id: int, new_member_ids: list[str]) -> None:
+    existing_ids = {
+        str(m.user_id)
+        for m in db.query(ChatRoomMember).filter(ChatRoomMember.room_id == room_id).all()
+    }
+    for user_id in new_member_ids:
+        if user_id in existing_ids:
+            continue
+        db.add(ChatRoomMember(room_id=room_id, user_id=user_id))
+        existing_ids.add(user_id)
+    db.commit()
+
+
+def leave_room(db: Session, room_id: int, user_id: str) -> None:
+    db.query(ChatRoomMember).filter(
+        ChatRoomMember.room_id == room_id, ChatRoomMember.user_id == user_id,
+    ).delete(synchronize_session=False)
+    db.query(Notification).filter(
+        Notification.room_id == room_id, Notification.user_id == user_id,
+    ).delete(synchronize_session=False)
+    db.commit()
