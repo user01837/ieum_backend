@@ -11,6 +11,8 @@ from app.models.user import User
 from app.models.department import Department
 from app.models.task import Task
 from app.models.task_assignee import TaskAssignee
+from app.models.petition import Petition
+from app.models.petition_assignee_history import PetitionAssigneeHistory
 from app.api.routers.auth import get_current_user, get_password_hash
 from app.core.config import settings
 
@@ -286,6 +288,60 @@ def update_user(
     # 부서 변경을 가장 먼저 처리하여 업무 담당을 초기화합니다.
     if "departmentCode" in update_data and request.departmentCode:
         if user_to_update.department_code != request.departmentCode:
+            # --- 부서 이동에 따른 미완료 민원 이관 로직 (시작) ---
+            moving_user_id = userId
+            # 이동하는 직원의 후임자 찾기
+            successor = db.query(User).filter(User.predecessor_user_id == moving_user_id).first()
+            
+            # 이동하는 직원의 미완료 민원 목록 조회
+            incomplete_petitions = db.query(Petition).filter(
+                Petition.assignee_user_id == moving_user_id,
+                Petition.status_code != '04'
+            ).all()
+
+            if successor:
+                # Case 2: 후임자가 있으면 후임자에게 이관
+                successor_id = successor.user_id
+                for p in incomplete_petitions:
+                    p.assignee_user_id = successor_id
+                    p.status_code = "01"
+                    db.add(PetitionAssigneeHistory(
+                        petition_id=p.petition_id,
+                        from_user_id=moving_user_id,
+                        to_user_id=successor_id,
+                        change_type="01", # 이관
+                    ))
+            elif incomplete_petitions:
+                # Case 1: 후임자가 없으면 새 부서의 부장에게 임시 이관
+                new_dept_code = request.departmentCode
+                department_head = db.query(User).filter(
+                    User.department_code == new_dept_code,
+                    User.position_code == '01' # '부장'
+                ).first()
+
+                if department_head:
+                    department_head_id = department_head.user_id
+                    for p in incomplete_petitions:
+                        p.assignee_user_id = department_head_id
+                        p.status_code = "01"
+                        db.add(PetitionAssigneeHistory(
+                            petition_id=p.petition_id,
+                            from_user_id=moving_user_id,
+                            to_user_id=department_head_id,
+                            change_type="02", # 임시 이관
+                        ))
+                else: # 부장이 없으면 담당자 없음으로 처리
+                    for p in incomplete_petitions:
+                        p.assignee_user_id = None
+                        p.status_code = "01"
+                        db.add(PetitionAssigneeHistory(
+                            petition_id=p.petition_id,
+                            from_user_id=moving_user_id,
+                            to_user_id=None,
+                            change_type="02", # 임시 이관
+                        ))
+            # --- 부서 이동에 따른 미완료 민원 이관 로직 (끝) ---
+
             # 부서가 변경되었으므로, 기존 담당 업무를 모두 초기화합니다.
             db.query(TaskAssignee).filter(TaskAssignee.user_id == userId).delete(synchronize_session=False)
 
@@ -321,7 +377,69 @@ def update_user(
 
         # 전임자가 새로 지정되거나 변경될 때만 업무 승계 로직 실행
         if predecessor_id and str(user_to_update.predecessor_user_id) != str(predecessor_id):
-            # 1. 전임자의 task_id 목록 조회
+            successor_id = userId
+            predecessor_user = db.query(User).filter(User.user_id == predecessor_id).first()
+            if not predecessor_user:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="전임자로 지정된 직원을 찾을 수 없습니다.")
+
+            # --- 민원 이관 로직 ---
+            # 1. 전임자에게 '현재' 배정된 미완료 민원을 후임자에게 직접 이관
+            petitions_to_transfer_directly = db.query(Petition).filter(
+                Petition.assignee_user_id == predecessor_id,
+                Petition.status_code != '04'
+            ).all()
+
+            for p in petitions_to_transfer_directly:
+                p.assignee_user_id = successor_id
+                p.status_code = "01"
+                db.add(PetitionAssigneeHistory(
+                    petition_id=p.petition_id,
+                    from_user_id=predecessor_id,
+                    to_user_id=successor_id,
+                    change_type="01", # 이관
+                ))
+
+            # 2. 부장에게 '임시 이관'되었던 전임자의 민원을 후임자에게 이관 (Case 3)
+            department_head = db.query(User).filter(
+                User.department_code == predecessor_user.department_code,
+                User.position_code == '01' # '부장'
+            ).first()
+
+            if department_head:
+                department_head_id = department_head.user_id
+
+                # 각 민원별 최신 이력 ID를 찾는 서브쿼리
+                latest_history_subquery = db.query(
+                    PetitionAssigneeHistory.petition_id,
+                    func.max(PetitionAssigneeHistory.history_id).label('max_history_id')
+                ).group_by(PetitionAssigneeHistory.petition_id).subquery()
+
+                # 이관할 민원 조회
+                petitions_to_transfer = db.query(Petition).join(
+                    PetitionAssigneeHistory, Petition.petition_id == PetitionAssigneeHistory.petition_id
+                ).join(
+                    latest_history_subquery,
+                    (PetitionAssigneeHistory.petition_id == latest_history_subquery.c.petition_id) &
+                    (PetitionAssigneeHistory.history_id == latest_history_subquery.c.max_history_id)
+                ).filter(
+                    Petition.assignee_user_id == department_head_id,
+                    Petition.status_code != '04',
+                    PetitionAssigneeHistory.from_user_id == predecessor_id,
+                    PetitionAssigneeHistory.to_user_id == department_head_id,
+                    PetitionAssigneeHistory.change_type == '02' # 임시 이관
+                ).all()
+
+                for p in petitions_to_transfer:
+                    p.assignee_user_id = successor_id
+                    p.status_code = "01"
+                    db.add(PetitionAssigneeHistory(
+                        petition_id=p.petition_id,
+                        from_user_id=department_head_id,
+                        to_user_id=successor_id,
+                        change_type="01", # 이관
+                    ))
+
+            # --- 담당 업무(Task) 승계 로직 ---
             predecessor_task_ids = {
                 row.task_id for row in db.query(TaskAssignee.task_id).filter(TaskAssignee.user_id == str(predecessor_id)).all()
             }
