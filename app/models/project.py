@@ -27,3 +27,4 @@ class Project(Base):
     approved_at           = Column(DateTime, nullable=True)
     created_at            = Column(DateTime, nullable=False, server_default=func.now())
     updated_at            = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+    chat_room_id          = Column(Integer, ForeignKey("CHAT_ROOM.room_id"), nullable=True)
