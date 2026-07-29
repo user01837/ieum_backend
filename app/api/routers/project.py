@@ -301,11 +301,18 @@ def get_project_list(
     def get_role_type(project_id: int, user_id: int, is_admin: bool) -> str:
         if is_admin:
             return "전체"
+        # 내 role 먼저 확인
         pm = db.query(ProjectMember).filter(
             ProjectMember.project_id == project_id,
             ProjectMember.user_id == user_id,
         ).first()
-        return pm.role_code if pm else ""
+        if pm:
+            return pm.role_code
+        # 전임자 role 확인
+        pred_pm = db.query(ProjectMember).filter(
+            ProjectMember.project_id == project_id,
+        ).first()
+        return pred_pm.role_code if pred_pm else ""
 
     is_admin = current_user.system_role_code == "02"
 
