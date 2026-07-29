@@ -68,7 +68,7 @@ class AnnouncementDetailResponse(BaseModel):
 # ----------------------------------------------------------------
 
 # 1. 목록 조회
-@router.get("", response_model=AnnouncementListResponse)
+@router.get("", response_model=AnnouncementListResponse, summary="공지사항 목록 조회")
 def get_announcement_list(
     page: int = Query(0, ge=0),
     size: int = Query(10, ge=1),
@@ -102,7 +102,7 @@ def get_announcement_list(
     )
 
 # 2. 상세 조회
-@router.get("/{announcementId}", response_model=AnnouncementDetailResponse)
+@router.get("/{announcementId}", response_model=AnnouncementDetailResponse, summary="공지사항 상세 조회")
 def get_announcement_detail(
     announcementId: int,
     current_user: User = Depends(get_current_user),
@@ -130,7 +130,7 @@ def get_announcement_detail(
     )
 
 # 3. 작성
-@router.post("", status_code=status.HTTP_200_OK)
+@router.post("", status_code=status.HTTP_200_OK, summary="공지사항 작성")
 def create_announcement(
     body: AnnouncementCreateRequest,
     background_tasks: BackgroundTasks,
@@ -169,7 +169,7 @@ def create_announcement(
     return {"announcementId": a.announcement_id}
 
 # 4. 수정
-@router.patch("/{announcementId}", status_code=status.HTTP_200_OK)
+@router.patch("/{announcementId}", status_code=status.HTTP_200_OK, summary="공지사항 수정")
 def update_announcement(
     announcementId: int,
     body: AnnouncementUpdateRequest,
@@ -197,7 +197,7 @@ def update_announcement(
     return {"announcementId": a.announcement_id}
 
 # 5. 삭제
-@router.delete("/{announcementId}", status_code=status.HTTP_200_OK)
+@router.delete("/{announcementId}", status_code=status.HTTP_200_OK, summary="공지사항 삭제")
 def delete_announcement(
     announcementId: int,
     current_user: User = Depends(get_current_user),
