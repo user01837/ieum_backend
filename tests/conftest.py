@@ -53,6 +53,7 @@ def make_user(db_session):
 @pytest.fixture()
 def client(db_session, make_user):
     from app.main import app
+    from app.api.routers import chat_ws
 
     holder = {"user": make_user("emp001", "김직원")}
 
@@ -65,8 +66,15 @@ def client(db_session, make_user):
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_current_user] = _override_get_current_user
 
+    # WebSocket 핸들러는 Depends(get_db)가 아니라 모듈 레벨 세션 팩토리로
+    # 짧은 수명 세션을 직접 열기 때문에(커넥션 풀 고갈 방지), 테스트에서는
+    # 그 팩토리를 인메모리 테스트 엔진 기반 세션메이커로 바꿔 끼운다.
+    original_session_factory = chat_ws.session_factory
+    chat_ws.session_factory = TestingSessionLocal
+
     with TestClient(app) as test_client:
         test_client.current_user_holder = holder
         yield test_client
 
+    chat_ws.session_factory = original_session_factory
     app.dependency_overrides.clear()

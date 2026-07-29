@@ -1,9 +1,11 @@
 import json
+import logging
 import queue
 import threading
 from datetime import timedelta
 
 import pytest
+from sqlalchemy.exc import OperationalError
 from starlette.websockets import WebSocketDisconnect
 
 from app.api.routers.auth import create_token
@@ -174,6 +176,93 @@ def test_ws_multi_tab_recipient_viewing_in_one_tab_gets_no_phantom_notification(
 
     from app.models.notification import Notification
     assert db_session.query(Notification).filter(Notification.user_id == "emp002").count() == 0
+
+
+def test_ws_fcm_push_runs_off_the_event_loop_thread(client, make_user, monkeypatch):
+    """동기 HTTPS 호출인 FCM 발송이 이벤트 루프를 막지 않고 스레드풀에서 실행되어야 한다."""
+    import time
+
+    from app.services import chat_service, fcm_service
+
+    other = make_user("emp002")  # 소켓을 열지 않으므로 오프라인 -> FCM 경로
+    room = client.post("/chat/rooms", json={"member_ids": [other.user_id]}).json()
+    token = _token_for(client.current_user_holder["user"])
+
+    recorded = {}
+    real_record_message = chat_service.record_message
+
+    def _record_message(db, room_id, sender_id, content):
+        # 이 호출은 WS 핸들러 코루틴(=이벤트 루프 스레드) 안에서 일어난다.
+        recorded["loop_thread"] = threading.get_ident()
+        return real_record_message(db, room_id, sender_id, content)
+
+    def _fake_push(db, recipient_id, room_id, message):
+        recorded["fcm_thread"] = threading.get_ident()
+
+    monkeypatch.setattr(chat_service, "record_message", _record_message)
+    monkeypatch.setattr(fcm_service, "send_new_message_push", _fake_push)
+
+    with client.websocket_connect(f"/ws/chat?token={token}") as ws:
+        ws.send_text(json.dumps({"type": "send_message", "room_id": room["room_id"], "content": "안녕"}))
+        ws.receive_text()  # echo
+
+    for _ in range(100):
+        if "fcm_thread" in recorded:
+            break
+        time.sleep(0.02)
+
+    assert "fcm_thread" in recorded, "FCM 발송이 호출되지 않았다"
+    assert recorded["fcm_thread"] != recorded["loop_thread"]
+
+
+def test_ws_db_error_during_message_does_not_kill_connection(client, make_user, db_session, caplog):
+    """메시지 처리 중 DB 오류가 나도 연결이 유지되고, 서버 로그에 흔적이 남아야 한다.
+
+    실패한 메시지는 "그 메시지만 실패"로 끝나고, 뒤이은 정상 메시지는 계속 처리되어야 한다.
+    """
+    from app.services import chat_service
+    from app.services.chat_connection_manager import manager as chat_manager
+
+    other = make_user("emp002")
+    room = client.post("/chat/rooms", json={"member_ids": [other.user_id]}).json()
+
+    user = client.current_user_holder["user"]
+    token = _token_for(user)
+
+    real_record_message = chat_service.record_message
+    calls = {"n": 0}
+
+    def _flaky_record_message(db, room_id, sender_id, content):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OperationalError("INSERT INTO CHAT_MESSAGE", {}, Exception("server has gone away"))
+        return real_record_message(db, room_id, sender_id, content)
+
+    chat_service.record_message = _flaky_record_message
+    try:
+        with caplog.at_level(logging.ERROR, logger="app.api.routers.chat_ws"):
+            with client.websocket_connect(f"/ws/chat?token={token}") as ws:
+                ws.send_text(
+                    json.dumps({"type": "send_message", "room_id": room["room_id"], "content": "실패할 메시지"})
+                )
+                # 연결이 살아있고, 뒤이은 정상 메시지는 계속 처리된다.
+                ws.send_text(
+                    json.dumps({"type": "send_message", "room_id": room["room_id"], "content": "정상 메시지"})
+                )
+
+                # 실패한 메시지는 브로드캐스트되지 않으므로 첫 수신 이벤트가 곧 두 번째 메시지여야 한다.
+                echo = json.loads(ws.receive_text())
+                assert echo["type"] == "new_message"
+                assert echo["message"]["content"] == "정상 메시지"
+                assert chat_manager.is_user_online(user.user_id) is True
+    finally:
+        chat_service.record_message = real_record_message
+
+    assert any("채팅 메시지 처리 실패" in r.message for r in caplog.records)
+
+    from app.models.chat import ChatMessage
+    contents = [m.content for m in db_session.query(ChatMessage).all()]
+    assert contents == ["정상 메시지"]
 
 
 def test_ws_send_message_ignores_non_int_room_id_and_keeps_connection_alive(client):
