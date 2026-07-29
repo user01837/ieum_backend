@@ -228,7 +228,8 @@ def build_detail_response(project: Project, db: Session) -> ProjectDetailRespons
     summary="프로젝트 목록 조회",
 )
 def get_project_list(
-    scope: str = Query(..., description="MY(내 주관) | JOINED(내 참여) | PREDECESSOR(전임자)"),
+    scope: Optional[str] = Query(None, description="MY(내 참여 전체) | PREDECESSOR(전임자) | None(전체, 관리자용)"),
+    role: Optional[str] = Query(None, description="01(주관) | 02(협력) | None(전체)"),
     stage: Optional[str] = Query(None),
     page: int = Query(0, ge=0),
     size: int = Query(10, ge=1),
@@ -242,30 +243,44 @@ def get_project_list(
         query = db.query(Project)
 
     elif scope == "MY":
-        project_ids = db.query(ProjectMember.project_id).filter(
+        member_q = db.query(ProjectMember.project_id).filter(
             ProjectMember.user_id == current_user.user_id,
-            ProjectMember.role_code == "01",
-        ).subquery()
-        query = db.query(Project).filter(Project.project_id.in_(project_ids))
-
-    elif scope == "JOINED":
-        project_ids = db.query(ProjectMember.project_id).filter(
-            ProjectMember.user_id == current_user.user_id,
-            ProjectMember.role_code == "02",
-        ).subquery()
-        query = db.query(Project).filter(Project.project_id.in_(project_ids))
+        )
+        if role:
+            member_q = member_q.filter(ProjectMember.role_code == role)
+        query = db.query(Project).filter(Project.project_id.in_(member_q.subquery()))
 
     elif scope == "PREDECESSOR":
         if not current_user.predecessor_user_id:
             return ProjectListResponse(content=[], totalElements=0, totalPages=0, page=page, size=size)
-        project_ids = db.query(ProjectMember.project_id).filter(
+        member_q = db.query(ProjectMember.project_id).filter(
             ProjectMember.user_id == current_user.predecessor_user_id,
-            ProjectMember.role_code == "01",
-        ).subquery()
-        query = db.query(Project).filter(
-            Project.project_id.in_(project_ids),
-            Project.stage_code == "02",
         )
+        if role:
+            member_q = member_q.filter(ProjectMember.role_code == role)
+        query = db.query(Project).filter(Project.project_id.in_(member_q.subquery()))
+
+    elif scope == "ALL":
+        my_q = db.query(ProjectMember.project_id).filter(
+            ProjectMember.user_id == current_user.user_id,
+        )
+        if role:
+            my_q = my_q.filter(ProjectMember.role_code == role)
+
+        pred_q = None
+        if current_user.predecessor_user_id:
+            pred_q = db.query(ProjectMember.project_id).filter(
+                ProjectMember.user_id == current_user.predecessor_user_id,
+            )
+            if role:
+                pred_q = pred_q.filter(ProjectMember.role_code == role)
+
+        if pred_q is not None:
+            from sqlalchemy import union
+            combined = union(my_q, pred_q).subquery()
+            query = db.query(Project).filter(Project.project_id.in_(combined))
+        else:
+            query = db.query(Project).filter(Project.project_id.in_(my_q.subquery()))
 
     else:
         raise HTTPException(status_code=400, detail="유효하지 않은 scope 값입니다.")
@@ -283,6 +298,17 @@ def get_project_list(
     total_pages = math.ceil(total_elements / size)
     items = query.order_by(Project.start_date.asc()).offset(page * size).limit(size).all()
 
+    def get_role_type(project_id: int, user_id: int, is_admin: bool) -> str:
+        if is_admin:
+            return "전체"
+        pm = db.query(ProjectMember).filter(
+            ProjectMember.project_id == project_id,
+            ProjectMember.user_id == user_id,
+        ).first()
+        return pm.role_code if pm else ""
+
+    is_admin = current_user.system_role_code == "02"
+
     content = [
         ProjectListItem(
             projectId=p.project_id,
@@ -292,7 +318,7 @@ def get_project_list(
             startDate=date_to_str(p.start_date),
             deadline=date_to_str(p.deadline),
             createdAt=datetime_to_str(p.created_at),
-            roleType="ADMIN" if current_user.system_role_code == "02" else scope,
+            roleType=get_role_type(p.project_id, current_user.user_id, is_admin),
         )
         for p in items
     ]
