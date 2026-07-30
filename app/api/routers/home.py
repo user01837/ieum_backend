@@ -50,6 +50,7 @@ class MyPetitionSummary(BaseModel):
     checked: int
     inProgress: int
     completed: int
+    delayed: int
 
 class UrgentPetitionItem(BaseModel):
     complaintId: int
@@ -244,10 +245,7 @@ def get_home_dashboard(
             func.sum(case((Petition.status_code == '03', 1), else_=0)).label("in_progress"),
             func.sum(case((Petition.status_code == '04', 1), else_=0)).label("completed"),
             func.sum(case(
-                (or_(
-                    and_(Petition.status_code != '04', Petition.due_date < today),
-                    and_(Petition.answered_at != None, Petition.due_date != None, func.date(Petition.answered_at) > Petition.due_date)
-                ), 1), else_=0
+                (and_(Petition.status_code != '04', Petition.due_date != None, Petition.due_date < today), 1), else_=0
             )).label("delayed")
         ).filter(
             Petition.received_at >= first_day_this_month,
@@ -321,8 +319,15 @@ def get_home_dashboard(
         in_progress = my_petitions_this_month_query.filter(Petition.status_code == "03").count()
         completed = my_petitions_this_month_query.filter(Petition.status_code == "04").count()
 
-        my_petition_summary = MyPetitionSummary(total=total, waiting=waiting, checked=checked, inProgress=in_progress, completed=completed)
+        delayed = my_petitions_this_month_query.filter(
+            Petition.status_code != "04",
+            Petition.due_date != None,
+            Petition.due_date < today,
+        ).count()
 
+
+        my_petition_summary = MyPetitionSummary(total=total, waiting=waiting, checked=checked, inProgress=in_progress, completed=completed, delayed=delayed)
+ 
         # 2. 공지사항 (최근 4개)
         announcement_results = db.query(Announcement).filter(
             Announcement.is_deleted == False

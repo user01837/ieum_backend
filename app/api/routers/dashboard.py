@@ -69,7 +69,7 @@ class DueSoonItem(BaseModel):
 @router.get(
     "/complaints/due-soon",
     response_model=List[DueSoonItem],
-    summary="처리기한 임박 민원 목록 (D-3 이내)",
+    summary="처리기한 임박(D-3 이내) 및 지연 민원 목록",
 )
 def get_due_soon_complaints(
     department_code: Optional[str] = None,
@@ -87,7 +87,6 @@ def get_due_soon_complaints(
             Petition.department_code == target_dept,
             Petition.status_code != "04",
             Petition.due_date != None,
-            Petition.due_date >= today,
             Petition.due_date <= three_days_later,
         )
         .order_by(Petition.due_date.asc())
