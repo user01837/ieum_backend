@@ -65,3 +65,40 @@ def test_leave_room_removes_current_user_only(client, make_user):
 def test_leave_room_rejects_non_member(client):
     res = client.delete("/chat/rooms/999999")
     assert res.status_code == 404
+
+
+def test_rename_room_updates_name(client, make_user):
+    m2 = make_user("emp002", "이직원")
+    room = client.post(
+        "/chat/rooms", json={"member_ids": [m2.user_id], "name": None},
+    ).json()
+
+    res = client.patch(f"/chat/rooms/{room['room_id']}", json={"name": "우리 팀방"})
+    assert res.status_code == 200
+    assert res.json()["name"] == "우리 팀방"
+
+    rooms = client.get("/chat/rooms").json()
+    assert rooms[0]["name"] == "우리 팀방"
+
+
+def test_rename_room_rejects_non_member(client, make_user):
+    m2 = make_user("emp002", "이직원")
+    m3 = make_user("emp003", "박직원")
+    room = client.post("/chat/rooms", json={"member_ids": [m2.user_id]}).json()
+
+    client.current_user_holder["user"] = m3
+    res = client.patch(f"/chat/rooms/{room['room_id']}", json={"name": "새 이름"})
+    assert res.status_code == 403
+
+
+def test_rename_room_rejects_nonexistent_room(client):
+    res = client.patch("/chat/rooms/999999", json={"name": "새 이름"})
+    assert res.status_code == 404
+
+
+def test_rename_room_rejects_empty_name(client, make_user):
+    m2 = make_user("emp002", "이직원")
+    room = client.post("/chat/rooms", json={"member_ids": [m2.user_id]}).json()
+
+    res = client.patch(f"/chat/rooms/{room['room_id']}", json={"name": ""})
+    assert res.status_code == 422

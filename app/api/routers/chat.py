@@ -38,6 +38,10 @@ class AddMembersRequest(BaseModel):
     member_ids: list[str] = Field(..., min_length=1, description="추가할 참여자 사번 목록")
 
 
+class RenameRoomRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100, description="새 채팅방 이름")
+
+
 @router.post("/rooms", response_model=RoomResponse, status_code=status.HTTP_201_CREATED)
 def create_room(
     req: CreateRoomRequest,
@@ -161,3 +165,26 @@ def leave_room_endpoint(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="존재하지 않는 채팅방이거나 이미 나간 방입니다.")
 
     chat_service.leave_room(db, room_id, str(current_user.user_id))
+
+
+@router.patch("/rooms/{room_id}", response_model=RoomResponse)
+def rename_room_endpoint(
+    room_id: int,
+    req: RenameRoomRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    room = db.query(ChatRoom).filter(ChatRoom.room_id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="존재하지 않는 채팅방입니다.")
+
+    if not chat_service.is_room_member(db, room_id, str(current_user.user_id)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="해당 채팅방의 멤버가 아닙니다.")
+
+    room = chat_service.rename_room(db, room, req.name.strip())
+
+    member_ids = [
+        str(m.user_id)
+        for m in db.query(ChatRoomMember).filter(ChatRoomMember.room_id == room_id).all()
+    ]
+    return RoomResponse(room_id=room.room_id, name=room.name, is_group=room.is_group, member_ids=member_ids)

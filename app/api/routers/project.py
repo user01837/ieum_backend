@@ -76,6 +76,7 @@ class ProjectCreateRequest(BaseModel):
     startDate: Optional[str] = None
     deadline: Optional[str] = None
     memberUserIds: List[int]
+    createChatRoom: bool = True
 
 class ProjectCreateResponse(BaseModel):
     projectId: int
@@ -98,6 +99,7 @@ class ProjectUpdateRequest(BaseModel):
     secPostManagement: Optional[str] = None
     coverTitle: Optional[str] = None
     memberUserIds: List[int]
+    createChatRoom: bool = True
 
 class MemberItem(BaseModel):
     userId: int
@@ -383,7 +385,7 @@ def create_project(
         db.add(member)
 
     collaborator_ids = [str(uid) for uid in body.memberUserIds if uid != current_user.user_id]
-    if collaborator_ids:
+    if body.createChatRoom and collaborator_ids:
         # 사업 협업방은 항상 그룹방으로 만든다. create_room을 쓰면 협력자가 1명일 때
         # 소유자와 협력자의 기존 1:1 DM을 그대로 사업 채팅방으로 물려받거나
         # is_group=False인 방이 만들어져 인원 추가가 불가능해진다.
@@ -496,7 +498,7 @@ def update_project(
             invited_by=current_user.user_id,
         ))
 
-    if ids_to_add:
+    if ids_to_add and body.createChatRoom:
         if project.chat_room_id:
             # 새로 추가된 협력자만 초대한다. 전체 협력자 목록을 넘기면, 스스로 채팅방을
             # 나간 사람이 다른 사람이 합류할 때마다 다시 끌려 들어오게 된다.
