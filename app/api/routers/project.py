@@ -613,8 +613,68 @@ def delete_project(
     db.delete(project)
     db.commit()
 
+class ProjectOwnerChangeRequest(BaseModel):
+    newOwnerUserId: int
 
-# 7. AI 기획서 초안 생성
+@router.patch(
+    "/{projectId}/owner",
+    status_code=status.HTTP_200_OK,
+    summary="사업 주관자 변경",
+)
+def change_project_owner(
+    projectId: int,
+    body: ProjectOwnerChangeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    project = db.query(Project).filter(Project.project_id == projectId).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="존재하지 않는 프로젝트입니다.")
+
+    if project.stage_code == "02":
+        raise HTTPException(status_code=403, detail="승인완료 상태라 변경할 수 없습니다.")
+
+    # 현재 주관자 확인
+    current_owner_pm = db.query(ProjectMember).filter(
+        ProjectMember.project_id == projectId,
+        ProjectMember.role_code == "01",
+    ).first()
+
+    if not current_owner_pm:
+        raise HTTPException(status_code=404, detail="현재 주관자가 없습니다.")
+
+    # 현재 주관자 본인만 가능
+    if str(current_owner_pm.user_id) != str(current_user.user_id):
+        raise HTTPException(status_code=403, detail="주관자만 변경할 수 있습니다.")
+
+    new_owner_id = body.newOwnerUserId
+
+    # 새 주관자가 이미 협력자인지 확인
+    existing_pm = db.query(ProjectMember).filter(
+        ProjectMember.project_id == projectId,
+        ProjectMember.user_id == new_owner_id,
+    ).first()
+
+    from app.models.project_member_history import ProjectMemberHistory
+
+    if existing_pm:
+        existing_pm.role_code = "01"
+        current_owner_pm.role_code = "02"
+    else:
+        current_owner_pm.user_id = new_owner_id
+
+    db.add(ProjectMemberHistory(
+        project_id=projectId,
+        from_user_id=current_user.user_id,
+        to_user_id=new_owner_id,
+        change_type="01",
+    ))
+
+    db.commit()
+
+    return {"message": "주관자가 변경되었습니다."}
+
+# 8. AI 기획서 초안 생성
 @router.post(
     "/{projectId}/ai-draft",
     response_model=AiDraftResponse,
@@ -660,7 +720,7 @@ def get_ai_draft(
         unverified_claims=data.get("unverified_claims", {}),
     )
 
-# 8. 기획서 내보내기
+# 9. 기획서 내보내기
 @router.get(
     "/{projectId}/export",
     summary="기획서 내보내기",
