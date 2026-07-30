@@ -231,6 +231,92 @@ def test_leaving_project_room_is_not_undone_by_new_collaborator(client, make_use
     assert collab_ids == {"20260002", "20260003", "20260004"}
 
 
+def test_create_project_with_collaborators_but_createChatRoom_false_skips_room(client, make_user, db_session):
+    owner = make_user("20260001", "김직원")
+    client.current_user_holder["user"] = owner
+    collab = make_user("20260002", "이직원")
+
+    res = client.post(
+        "/projects",
+        json={
+            "name": "테스트 사업",
+            "businessContent": "내용",
+            "memberUserIds": [collab.user_id],
+            "createChatRoom": False,
+        },
+    )
+    assert res.status_code == 200
+    project_id = res.json()["projectId"]
+
+    project = db_session.query(Project).filter(Project.project_id == project_id).first()
+    assert project.chat_room_id is None
+
+
+def test_update_project_adding_collaborator_with_createChatRoom_false_skips_room(client, make_user, db_session):
+    owner = make_user("20260001", "김직원")
+    client.current_user_holder["user"] = owner
+
+    res = client.post(
+        "/projects",
+        json={"name": "테스트 사업", "businessContent": "내용", "memberUserIds": []},
+    )
+    project_id = res.json()["projectId"]
+    collab = make_user("20260002", "이직원")
+
+    update_res = client.patch(
+        f"/projects/{project_id}",
+        json={
+            "name": "테스트 사업",
+            "businessContent": "내용",
+            "memberUserIds": [collab.user_id],
+            "createChatRoom": False,
+        },
+    )
+    assert update_res.status_code == 200
+
+    project = db_session.query(Project).filter(Project.project_id == project_id).first()
+    assert project.chat_room_id is None
+    # 사업 협력자 자격 자체는 정상적으로 부여되어야 한다 (단톡방만 생략).
+    collab_ids = {
+        str(m.user_id)
+        for m in db_session.query(ProjectMember).filter(
+            ProjectMember.project_id == project_id, ProjectMember.role_code == "02"
+        ).all()
+    }
+    assert collab_ids == {"20260002"}
+
+
+def test_update_project_with_existing_room_and_createChatRoom_false_skips_adding_new_member(
+    client, make_user, db_session
+):
+    """이미 방이 있어도 createChatRoom=false면 새 협력자를 그 방에 초대하지 않는다."""
+    owner = make_user("20260001", "김직원")
+    client.current_user_holder["user"] = owner
+    collab1 = make_user("20260002", "이직원")
+
+    res = client.post(
+        "/projects",
+        json={"name": "테스트 사업", "businessContent": "내용", "memberUserIds": [collab1.user_id]},
+    )
+    project_id = res.json()["projectId"]
+    project = db_session.query(Project).filter(Project.project_id == project_id).first()
+    room_id = project.chat_room_id
+    assert room_id is not None
+
+    collab2 = make_user("20260003", "박직원")
+    client.patch(
+        f"/projects/{project_id}",
+        json={
+            "name": "테스트 사업",
+            "businessContent": "내용",
+            "memberUserIds": [collab1.user_id, collab2.user_id],
+            "createChatRoom": False,
+        },
+    )
+
+    assert "20260003" not in _room_member_ids(db_session, room_id)
+
+
 def test_lazy_room_creation_by_non_owner_includes_real_owner(client, make_user, db_session):
     """주관자가 아닌 사람이 수정해 방이 뒤늦게 만들어져도 실제 주관자가 포함된다."""
     owner = make_user("20260001", "김직원")

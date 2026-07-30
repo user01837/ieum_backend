@@ -184,3 +184,10 @@ def leave_room(db: Session, room_id: int, user_id: str) -> None:
         Notification.room_id == room_id, Notification.user_id == user_id,
     ).delete(synchronize_session=False)
     db.commit()
+
+
+def rename_room(db: Session, room: ChatRoom, name: str) -> ChatRoom:
+    room.name = name
+    db.commit()
+    db.refresh(room)
+    return room
