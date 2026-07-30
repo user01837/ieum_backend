@@ -384,7 +384,10 @@ def create_project(
 
     collaborator_ids = [str(uid) for uid in body.memberUserIds if uid != current_user.user_id]
     if collaborator_ids:
-        room = chat_service.create_room(
+        # 사업 협업방은 항상 그룹방으로 만든다. create_room을 쓰면 협력자가 1명일 때
+        # 소유자와 협력자의 기존 1:1 DM을 그대로 사업 채팅방으로 물려받거나
+        # is_group=False인 방이 만들어져 인원 추가가 불가능해진다.
+        room = chat_service.create_group_room(
             db,
             str(current_user.user_id),
             collaborator_ids,
@@ -494,11 +497,24 @@ def update_project(
         ))
 
     if ids_to_add:
-        collaborator_ids = [str(uid) for uid in new_collab_ids]
         if project.chat_room_id:
-            chat_service.add_members_to_room(db, project.chat_room_id, collaborator_ids)
+            # 새로 추가된 협력자만 초대한다. 전체 협력자 목록을 넘기면, 스스로 채팅방을
+            # 나간 사람이 다른 사람이 합류할 때마다 다시 끌려 들어오게 된다.
+            chat_service.add_members_to_room(
+                db, project.chat_room_id, [str(uid) for uid in ids_to_add]
+            )
         else:
-            room = chat_service.create_room(
+            # update_project에는 주관자 권한 검사가 없어 current_user가 이 사업의 실제
+            # 주관자(role_code='01')가 아닐 수 있다. 방을 뒤늦게 만들 때 실제 주관자가
+            # 빠지지 않도록 명시적으로 조회해 멤버에 포함한다.
+            owner_member = db.query(ProjectMember).filter(
+                ProjectMember.project_id == projectId,
+                ProjectMember.role_code == "01",
+            ).first()
+            collaborator_ids = [str(uid) for uid in new_collab_ids]
+            if owner_member:
+                collaborator_ids.append(str(owner_member.user_id))
+            room = chat_service.create_group_room(
                 db,
                 str(current_user.user_id),
                 collaborator_ids,
