@@ -235,6 +235,63 @@ def create_user(
 
     return UserCreationResponse(userId=str(new_user.user_id), name=new_user.name, message="신규 직원이 성공적으로 생성되었습니다.")
 
+def _transfer_petitions_on_user_change(
+    db: Session, 
+    moving_user: User, 
+    target_department_code: str
+):
+    """
+    사용자 변경(부서이동, 퇴직 등) 시 미완료 민원을 이관합니다.
+    
+    1. 후임자가 있으면 후임자에게 이관합니다.
+    2. 후임자가 없으면 대상 부서의 부장에게 임시 이관합니다.
+    3. 부장도 없으면 담당자 없음으로 처리합니다.
+    """
+    moving_user_id = moving_user.user_id
+
+    # 후임자 찾기
+    successor = db.query(User).filter(User.predecessor_user_id == moving_user_id).first()
+    
+    # 미완료 민원 목록 조회
+    incomplete_petitions = db.query(Petition).filter(
+        Petition.assignee_user_id == moving_user_id,
+        Petition.status_code != '04' # '완료'가 아닌 상태
+    ).all()
+
+    if not incomplete_petitions:
+        return
+
+    if successor:
+        # Case 1: 후임자가 있으면 후임자에게 이관
+        successor_id = successor.user_id
+        for p in incomplete_petitions:
+            p.assignee_user_id = successor_id
+            p.status_code = "01"
+            db.add(PetitionAssigneeHistory(
+                petition_id=p.petition_id,
+                from_user_id=moving_user_id,
+                to_user_id=successor_id,
+                change_type="01", # 이관
+            ))
+    else:
+        # Case 2: 후임자가 없으면 대상 부서의 부장에게 임시 이관
+        department_head = db.query(User).filter(
+            User.department_code == target_department_code,
+            User.position_code == '01' # '부장'
+        ).first()
+
+        target_assignee_id = department_head.user_id if department_head else None
+        
+        for p in incomplete_petitions:
+            p.assignee_user_id = target_assignee_id
+            p.status_code = "01"
+            db.add(PetitionAssigneeHistory(
+                petition_id=p.petition_id,
+                from_user_id=moving_user_id,
+                to_user_id=target_assignee_id,
+                change_type="02", # 임시 이관
+            ))
+
 @router.patch(
     "/users/{userId}",
     response_model=UserUpdateResponse,
@@ -288,59 +345,8 @@ def update_user(
     # 부서 변경을 가장 먼저 처리하여 업무 담당을 초기화합니다.
     if "departmentCode" in update_data and request.departmentCode:
         if user_to_update.department_code != request.departmentCode:
-            # --- 부서 이동에 따른 미완료 민원 이관 로직 (시작) ---
-            moving_user_id = userId
-            # 이동하는 직원의 후임자 찾기
-            successor = db.query(User).filter(User.predecessor_user_id == moving_user_id).first()
-            
-            # 이동하는 직원의 미완료 민원 목록 조회
-            incomplete_petitions = db.query(Petition).filter(
-                Petition.assignee_user_id == moving_user_id,
-                Petition.status_code != '04'
-            ).all()
-
-            if successor:
-                # Case 2: 후임자가 있으면 후임자에게 이관
-                successor_id = successor.user_id
-                for p in incomplete_petitions:
-                    p.assignee_user_id = successor_id
-                    p.status_code = "01"
-                    db.add(PetitionAssigneeHistory(
-                        petition_id=p.petition_id,
-                        from_user_id=moving_user_id,
-                        to_user_id=successor_id,
-                        change_type="01", # 이관
-                    ))
-            elif incomplete_petitions:
-                # Case 1: 후임자가 없으면 새 부서의 부장에게 임시 이관
-                new_dept_code = request.departmentCode
-                department_head = db.query(User).filter(
-                    User.department_code == new_dept_code,
-                    User.position_code == '01' # '부장'
-                ).first()
-
-                if department_head:
-                    department_head_id = department_head.user_id
-                    for p in incomplete_petitions:
-                        p.assignee_user_id = department_head_id
-                        p.status_code = "01"
-                        db.add(PetitionAssigneeHistory(
-                            petition_id=p.petition_id,
-                            from_user_id=moving_user_id,
-                            to_user_id=department_head_id,
-                            change_type="02", # 임시 이관
-                        ))
-                else: # 부장이 없으면 담당자 없음으로 처리
-                    for p in incomplete_petitions:
-                        p.assignee_user_id = None
-                        p.status_code = "01"
-                        db.add(PetitionAssigneeHistory(
-                            petition_id=p.petition_id,
-                            from_user_id=moving_user_id,
-                            to_user_id=None,
-                            change_type="02", # 임시 이관
-                        ))
-            # --- 부서 이동에 따른 미완료 민원 이관 로직 (끝) ---
+            # --- 부서 이동에 따른 미완료 민원 이관 로직 ---
+            _transfer_petitions_on_user_change(db, user_to_update, request.departmentCode)
 
             # 부서가 변경되었으므로, 기존 담당 업무를 모두 초기화합니다.
             db.query(TaskAssignee).filter(TaskAssignee.user_id == userId).delete(synchronize_session=False)
@@ -368,6 +374,10 @@ def update_user(
     if "statusCode" in update_data and request.statusCode and request.statusCode not in USER_STATUS_MAP:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="유효하지 않은 재직상태 코드입니다.")
     if "statusCode" in update_data:
+        # 퇴직 또는 휴직 처리 시 미완료 민원 이관
+        if request.statusCode in ['02', '03'] and user_to_update.status_code != request.statusCode:
+            _transfer_petitions_on_user_change(db, user_to_update, user_to_update.department_code)
+
         user_to_update.status_code = request.statusCode
 
     if "predecessorUserId" in update_data:

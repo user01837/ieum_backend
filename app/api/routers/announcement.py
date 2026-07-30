@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional, List
 import math
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks, UploadFile, File, Form
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
@@ -11,9 +11,11 @@ from app.db.session import get_db
 from app.api.routers.auth import get_current_user
 from app.models.user import User
 from app.models.announcement import Announcement
+from app.models.announcement_attachment import AnnouncementAttachment
 from app.models.notification import Notification, DeviceToken
 from app.models.department import Department
 from app.services import fcm_service
+from app.services.s3_service import upload_file_to_s3
 
 router = APIRouter()
 
@@ -40,6 +42,14 @@ def get_department_name(department_code: Optional[str], db: Session) -> str:
 # ----------------------------------------------------------------
 # Pydantic 스키마
 # ----------------------------------------------------------------
+
+def get_create_request(request_data: str = Form(...)) -> "AnnouncementCreateRequest":
+    """Form-data로 받은 JSON 문자열을 Pydantic 모델로 파싱"""
+    return AnnouncementCreateRequest.parse_raw(request_data)
+
+def get_update_request(request_data: str = Form(...)) -> "AnnouncementUpdateRequest":
+    """Form-data로 받은 JSON 문자열을 Pydantic 모델로 파싱"""
+    return AnnouncementUpdateRequest.parse_raw(request_data)
 
 class AnnouncementCreateRequest(BaseModel):
     title:           str
@@ -68,6 +78,11 @@ class AnnouncementListResponse(BaseModel):
     page:          int
     size:          int
 
+class AttachmentInfo(BaseModel):
+    attachmentId: int
+    fileUrl:      str
+    fileName:     str
+
 class AnnouncementDetailResponse(BaseModel):
     announcementId: int
     title:          str
@@ -79,6 +94,7 @@ class AnnouncementDetailResponse(BaseModel):
     departmentName:  Optional[str]
     createdAt:      str
     updatedAt:      str
+    attachments:    List[AttachmentInfo] = []
 
 # ----------------------------------------------------------------
 # 엔드포인트
@@ -159,6 +175,17 @@ def get_announcement_detail(
     creator = db.query(User).filter(User.user_id == a.created_by).first()
     updater = db.query(User).filter(User.user_id == a.updated_by).first() if a.updated_by else None
 
+    # 첨부파일 조회
+    attachments = db.query(AnnouncementAttachment).filter(
+        AnnouncementAttachment.announcement_id == announcementId,
+        AnnouncementAttachment.is_deleted == False
+    ).all()
+    attachment_infos = [AttachmentInfo(
+        attachmentId=att.attachment_id,
+        fileUrl=att.file_url,
+        fileName=att.file_name
+    ) for att in attachments]
+
     return AnnouncementDetailResponse(
         announcementId=a.announcement_id,
         title=a.title,
@@ -170,13 +197,15 @@ def get_announcement_detail(
         departmentName=get_department_name(a.department_code, db),
         createdAt=a.created_at.isoformat(),
         updatedAt=a.updated_at.isoformat(),
+        attachments=attachment_infos,
     )
 
 # 3. 작성
 @router.post("", status_code=status.HTTP_200_OK, summary="공지사항 작성")
-def create_announcement(
-    body: AnnouncementCreateRequest,
+async def create_announcement(
     background_tasks: BackgroundTasks,
+    body: AnnouncementCreateRequest = Depends(get_create_request),
+    files: List[UploadFile] = File(None, description="첨부파일 목록"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -190,7 +219,20 @@ def create_announcement(
         department_code=body.department_code if current_user.system_role_code == "02" else current_user.department_code,
     )
     db.add(a)
-    db.commit()
+    db.flush()  # announcement_id를 할당받기 위해 flush
+
+    # 첨부파일 처리
+    if files:
+        for file in files:
+            file_url = upload_file_to_s3(file, path_prefix="announcements")
+            attachment = AnnouncementAttachment(
+                announcement_id=a.announcement_id,
+                file_url=file_url,
+                file_name=file.filename,
+            )
+            db.add(attachment)
+
+    db.commit()  # 모든 DB 작업을 한번에 커밋
     db.refresh(a)
 
     # 전체 일반 사용자에게 NOTIFICATION row 생성
@@ -214,9 +256,11 @@ def create_announcement(
 
 # 4. 수정
 @router.patch("/{announcementId}", status_code=status.HTTP_200_OK, summary="공지사항 수정")
-def update_announcement(
+async def update_announcement(
     announcementId: int,
-    body: AnnouncementUpdateRequest,
+    body: AnnouncementUpdateRequest = Depends(get_update_request),
+    new_files: List[UploadFile] = File(None, description="새로 추가할 첨부파일 목록"),
+    deleted_file_ids: Optional[str] = Form(None, description="삭제할 첨부파일 ID 목록 (쉼표로 구분)"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -229,6 +273,7 @@ def update_announcement(
     if not a:
         raise HTTPException(status_code=404, detail="존재하지 않는 공지사항입니다.")
 
+    # 텍스트 필드 업데이트
     if body.title is not None:
         a.title = body.title
     if body.content is not None:
@@ -237,6 +282,28 @@ def update_announcement(
         a.is_pinned = body.is_pinned
     if body.department_code is not None:
         a.department_code = body.department_code
+    
+    # 기존 첨부파일 삭제 처리
+    if deleted_file_ids:
+        ids_to_delete = [int(id_str) for id_str in deleted_file_ids.split(',') if id_str.isdigit()]
+        if ids_to_delete:
+            db.query(AnnouncementAttachment).filter(
+                AnnouncementAttachment.announcement_id == announcementId,
+                AnnouncementAttachment.attachment_id.in_(ids_to_delete)
+            ).update({"is_deleted": True, "deleted_at": datetime.now(timezone.utc)}, synchronize_session=False)
+
+    # 새 첨부파일 추가 처리
+    if new_files:
+        for file in new_files:
+            file_url = upload_file_to_s3(file, path_prefix="announcements")
+            attachment = AnnouncementAttachment(
+                announcement_id=announcementId,
+                file_url=file_url,
+                file_name=file.filename,
+            )
+            db.add(attachment)
+
+
     a.updated_by = current_user.user_id
 
     db.commit()
