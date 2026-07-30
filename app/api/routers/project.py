@@ -33,6 +33,7 @@ from app.models.project_member import ProjectMember
 from app.models.user import User
 from app.models.department import Department
 from app.api.routers.auth import get_current_user
+from app.services import chat_service
 
 FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "fonts")
 FONT_DIR = os.path.normpath(FONT_DIR)
@@ -74,7 +75,7 @@ class ProjectCreateRequest(BaseModel):
     businessContent: str
     startDate: Optional[str] = None
     deadline: Optional[str] = None
-    memberUserIds: List[int]
+    memberUserIds: List[str]
 
 class ProjectCreateResponse(BaseModel):
     projectId: int
@@ -96,10 +97,10 @@ class ProjectUpdateRequest(BaseModel):
     secExpectedEffect: Optional[str] = None
     secPostManagement: Optional[str] = None
     coverTitle: Optional[str] = None
-    memberUserIds: List[int]
+    memberUserIds: List[str]
 
 class MemberItem(BaseModel):
-    userId: int
+    userId: str
     name: str
     roleName: str
     departmentName: str
@@ -381,6 +382,16 @@ def create_project(
         )
         db.add(member)
 
+    collaborator_ids = [str(uid) for uid in body.memberUserIds if uid != current_user.user_id]
+    if collaborator_ids:
+        room = chat_service.create_room(
+            db,
+            str(current_user.user_id),
+            collaborator_ids,
+            name=f"[사업] {project.name}",
+        )
+        project.chat_room_id = room.room_id
+
     db.commit()
     db.refresh(project)
 
@@ -481,6 +492,19 @@ def update_project(
             role_code="02",
             invited_by=current_user.user_id,
         ))
+
+    if ids_to_add:
+        collaborator_ids = [str(uid) for uid in new_collab_ids]
+        if project.chat_room_id:
+            chat_service.add_members_to_room(db, project.chat_room_id, collaborator_ids)
+        else:
+            room = chat_service.create_room(
+                db,
+                str(current_user.user_id),
+                collaborator_ids,
+                name=f"[사업] {project.name}",
+            )
+            project.chat_room_id = room.room_id
 
     db.commit()
     db.refresh(project)
