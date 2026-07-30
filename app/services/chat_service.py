@@ -41,6 +41,20 @@ def create_room(db: Session, creator_id: str, member_ids: list[str], name: str |
     return room
 
 
+def create_group_room(db: Session, creator_id: str, member_ids: list[str], name: str | None) -> ChatRoom:
+    """항상 그룹방(is_group=True)으로 생성한다 - create_room과 달리 1:1 방 재사용/중복
+    제거 로직을 타지 않는다. 개인 DM과 절대 뒤섞이면 안 되는 용도(예: 사업 협업방)에 쓴다."""
+    all_member_ids = sorted(set(member_ids) | {creator_id})
+    room = ChatRoom(name=name, is_group=True, created_by=creator_id)
+    db.add(room)
+    db.flush()
+    for user_id in all_member_ids:
+        db.add(ChatRoomMember(room_id=room.room_id, user_id=user_id))
+    db.commit()
+    db.refresh(room)
+    return room
+
+
 def list_rooms_for_user(db: Session, user_id: str) -> list[dict]:
     memberships = db.query(ChatRoomMember).filter(ChatRoomMember.user_id == user_id).all()
     room_ids = [m.room_id for m in memberships]
@@ -147,3 +161,26 @@ def create_notification(db: Session, user_id: str, room_id: int, message_id: int
     db.commit()
     db.refresh(notification)
     return notification
+
+
+def add_members_to_room(db: Session, room_id: int, new_member_ids: list[str]) -> None:
+    existing_ids = {
+        str(m.user_id)
+        for m in db.query(ChatRoomMember).filter(ChatRoomMember.room_id == room_id).all()
+    }
+    for user_id in new_member_ids:
+        if user_id in existing_ids:
+            continue
+        db.add(ChatRoomMember(room_id=room_id, user_id=user_id))
+        existing_ids.add(user_id)
+    db.commit()
+
+
+def leave_room(db: Session, room_id: int, user_id: str) -> None:
+    db.query(ChatRoomMember).filter(
+        ChatRoomMember.room_id == room_id, ChatRoomMember.user_id == user_id,
+    ).delete(synchronize_session=False)
+    db.query(Notification).filter(
+        Notification.room_id == room_id, Notification.user_id == user_id,
+    ).delete(synchronize_session=False)
+    db.commit()

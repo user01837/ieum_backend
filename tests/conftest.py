@@ -16,6 +16,17 @@ test_engine = create_engine(
     TEST_DATABASE_URL,
     connect_args={"check_same_thread": False},
     poolclass=StaticPool,
+    # SQLite's "insertmanyvalues" batching correlates inserted rows back via a
+    # RETURNING sentinel. When a batch inserts a numeric-looking string into an
+    # Integer-typed column (e.g. CHAT_ROOM_MEMBER.user_id, which stores string
+    # employee ids), SQLite's dynamic type affinity silently coerces that value
+    # to an int on the way back out, and SQLAlchemy can't match it to the
+    # original string it sent — raising
+    # "Can't match sentinel values in result set to parameter sets".
+    # This is purely a SQLite/test-harness artifact of multi-row batch inserts
+    # with RETURNING; it does not reflect production DB behavior. Disabling
+    # insertmanyvalues avoids it without touching any application code.
+    use_insertmanyvalues=False,
 )
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
