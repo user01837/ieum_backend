@@ -1,13 +1,16 @@
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from typing import Optional, List
+from fastapi import APIRouter, Depends, HTTPException, Query, status, File, UploadFile, Form
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.api.routers.auth import get_current_user
 from app.models.user import User
-from app.models.chat import ChatRoom, ChatRoomMember
+from app.models.chat import ChatRoom, ChatRoomMember, ChatMessage
 from app.services import chat_service
+from app.models.chat_message_attachment import ChatMessageAttachment
+from app.services.s3_service import upload_file_to_s3
+
 
 router = APIRouter()
 
@@ -87,13 +90,83 @@ def list_rooms(
     return [RoomListItem(**r) for r in rooms]
 
 
+class AttachmentInfo(BaseModel):
+    attachment_id: int
+    file_url: str
+    file_name: str
+
+
 class MessageResponse(BaseModel):
     message_id: int
     room_id: int
     sender_id: str
-    content: str
+    content: Optional[str]
     created_at: str
+    attachments: List[AttachmentInfo] = []
 
+@router.post("/rooms/{room_id}/messages", response_model=MessageResponse, summary="메시지 및 파일 전송")
+async def send_message_with_attachment(
+    room_id: int,
+    content: Optional[str] = Form(None),
+    files: List[UploadFile] = File(None, description="첨부파일 목록"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    채팅방에 텍스트 메시지나 파일을 전송합니다.
+    - 이 API를 통해 메시지가 생성되면, 백엔드에서는 웹소켓을 통해 해당 방의 모든 참여자에게 메시지를 전송(broadcast)해야 합니다.
+    """
+    if not content and not files:
+        raise HTTPException(status_code=400, detail="메시지 내용이나 파일이 하나 이상 있어야 합니다.")
+
+    if not chat_service.is_room_member(db, room_id, str(current_user.user_id)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="해당 채팅방의 멤버가 아닙니다.")
+
+    # 1. 메시지 생성
+    new_message = ChatMessage(
+        room_id=room_id,
+        sender_id=current_user.user_id,
+        content=content or "",
+    )
+    db.add(new_message)
+    db.flush()  # message_id를 할당받기 위해 flush
+
+    # 2. 첨부파일 처리
+    db_attachments = []
+    if files:
+        for file in files:
+            file_url = upload_file_to_s3(file, path_prefix="chat")
+            attachment = ChatMessageAttachment(
+                message_id=new_message.message_id,
+                file_url=file_url,
+                file_name=file.filename,
+            )
+            db.add(attachment)
+            db_attachments.append(attachment)
+
+    db.commit()
+    db.refresh(new_message)
+
+    # 3. 응답 데이터 구성
+    attachment_infos = [
+        AttachmentInfo(
+            attachment_id=att.attachment_id,
+            file_url=att.file_url,
+            file_name=att.file_name
+        ) for att in db_attachments
+    ]
+
+    # TODO: 웹소켓을 통해 이 메시지를 채팅방 참여자들에게 전송하는 로직 필요
+    # chat_service.broadcast_message(room_id, new_message, attachment_infos)
+
+    return MessageResponse(
+        message_id=new_message.message_id,
+        room_id=new_message.room_id,
+        sender_id=str(new_message.sender_id),
+        content=new_message.content,
+        created_at=new_message.created_at.isoformat(),
+        attachments=attachment_infos
+    )
 
 @router.get("/rooms/{room_id}/messages", response_model=list[MessageResponse])
 def get_room_messages(
@@ -107,16 +180,38 @@ def get_room_messages(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="해당 채팅방의 멤버가 아닙니다.")
 
     messages = chat_service.get_messages(db, room_id, before_message_id, size)
-    return [
-        MessageResponse(
+    if not messages:
+        return []
+
+    # N+1 문제를 방지하기 위해 첨부파일을 한 번의 쿼리로 가져옵니다.
+    message_ids = [m.message_id for m in messages]
+    attachments_result = db.query(ChatMessageAttachment).filter(
+        ChatMessageAttachment.message_id.in_(message_ids)
+    ).all()
+
+    # 메시지 ID를 키로 하는 딕셔너리로 변환하여 쉽게 찾을 수 있도록 합니다.
+    attachments_map = {}
+    for att in attachments_result:
+        if att.message_id not in attachments_map:
+            attachments_map[att.message_id] = []
+        attachments_map[att.message_id].append(AttachmentInfo(
+            attachment_id=att.attachment_id,
+            file_url=att.file_url,
+            file_name=att.file_name
+        ))
+
+    # 최종 응답 데이터를 구성합니다.
+    response = []
+    for m in messages:
+        response.append(MessageResponse(
             message_id=m.message_id,
             room_id=m.room_id,
             sender_id=str(m.sender_id),
             content=m.content,
             created_at=m.created_at.isoformat(),
-        )
-        for m in messages
-    ]
+            attachments=attachments_map.get(m.message_id, [])
+        ))
+    return response
 
 
 @router.post("/rooms/{room_id}/read", status_code=status.HTTP_204_NO_CONTENT)

@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Boolean, Text, DateTime, ForeignKey, func
 from app.db.database import Base
-
+from sqlalchemy.orm import Session, relationship
 
 class ChatRoom(Base):
     __tablename__ = "CHAT_ROOM"
@@ -28,3 +28,4 @@ class ChatMessage(Base):
     sender_id = Column(Integer, ForeignKey("USER.user_id"), nullable=False)
     content = Column(Text, nullable=False)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
+    attachments = relationship("ChatMessageAttachment", back_populates="message")
