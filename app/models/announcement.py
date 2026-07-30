@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, Text, Boolean, DateTime, ForeignKey, func
+from sqlalchemy.orm import relationship
 from app.db.database import Base
 
 
@@ -16,3 +17,5 @@ class Announcement(Base):
     created_at      = Column(DateTime, nullable=False, server_default=func.now())
     updated_at      = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
     department_code = Column(String(10), ForeignKey("DEPARTMENT.department_code"), nullable=True)
+
+    attachments = relationship("AnnouncementAttachment", back_populates="announcement", cascade="all, delete-orphan")
