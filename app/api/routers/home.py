@@ -330,7 +330,11 @@ def get_home_dashboard(
  
         # 2. 공지사항 (최근 4개)
         announcement_results = db.query(Announcement).filter(
-            Announcement.is_deleted == False
+            Announcement.is_deleted == False,
+            or_(
+                Announcement.department_code == None,
+                Announcement.department_code == current_user.department_code
+            )
         ).order_by(
             Announcement.is_pinned.desc(),
             Announcement.created_at.desc()
@@ -344,14 +348,14 @@ def get_home_dashboard(
                 date=a.created_at.date().isoformat()) for a in announcement_results
         ]
 
-        # 3. 긴급 민원 (D-3 이내, 최대 5개)
+        # 3. 긴급 민원 (D-3 이내)
         three_days_later = today + timedelta(days=3)
         urgent_petitions_results = db.query(Petition).filter(
             Petition.assignee_user_id == current_user.user_id,
             Petition.status_code != "04",
             Petition.due_date != None,
             Petition.due_date <= three_days_later,
-        ).order_by(Petition.due_date.asc()).limit(5).all()
+        ).order_by(Petition.due_date.asc()).all()
 
         urgent_petitions = [UrgentPetitionItem(complaintId=p.petition_id, title=p.title, dueDate=p.due_date.isoformat() if p.due_date else None, dDay=(p.due_date - today).days) for p in urgent_petitions_results]
 

@@ -4,8 +4,8 @@ import math
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, BackgroundTasks, UploadFile, File, Form
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy.orm import Session, aliased
+from sqlalchemy import or_, exists, func
 
 from app.db.session import get_db
 from app.api.routers.auth import get_current_user
@@ -70,6 +70,7 @@ class AnnouncementListItem(BaseModel):
     createdByName:  str
     departmentName:  Optional[str]
     createdAt:      str
+    hasAttachment:  bool
 
 class AnnouncementListResponse(BaseModel):
     content:       List[AnnouncementListItem]
@@ -110,44 +111,61 @@ def get_announcement_list(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # 별칭(alias) 및 서브쿼리 생성
+    Creator = aliased(User, name="creator")
+    attachment_exists_subquery = exists().where(
+        AnnouncementAttachment.announcement_id == Announcement.announcement_id,
+        AnnouncementAttachment.is_deleted == False
+    ).label("has_attachment")
 
+    # 기본 쿼리 구성 (N+1 문제 해결을 위해 JOIN 사용)
+    query = db.query(
+        Announcement,
+        Creator.name.label("creator_name"),
+        Department.name.label("department_name"),
+        attachment_exists_subquery
+    ).outerjoin(
+        Creator, Announcement.created_by == Creator.user_id
+    ).outerjoin(
+        Department, Announcement.department_code == Department.department_code
+    ).filter(Announcement.is_deleted == False)
 
+    # 권한에 따른 필터링
     if current_user.system_role_code == "02":
-        query = db.query(Announcement).filter(Announcement.is_deleted == False)
         if department_code:
             query = query.filter(Announcement.department_code == department_code)
     else:
-        query = db.query(Announcement).filter(
-            Announcement.is_deleted == False,
-        )
         if department_code:
             query = query.filter(Announcement.department_code == department_code)
         else:
             query = query.filter(
                 or_(
-                    Announcement.department_code == None,
+                    Announcement.department_code == None, # 전체 공지
                     Announcement.department_code == current_user.department_code,
                 )
             )
+    # 키워드 검색
     if keyword:
         query = query.filter(Announcement.title.like(f"%{keyword}%"))
 
-    query = query.order_by(Announcement.is_pinned.desc(), Announcement.created_at.desc())
-
-    total_elements = query.count()
+    # 전체 개수 조회 (페이지네이션)
+    total_elements = query.with_entities(func.count(Announcement.announcement_id)).scalar()
     total_pages = math.ceil(total_elements / size)
-    items = query.offset(page * size).limit(size).all()
+    
+    # 정렬 및 페이징 적용하여 데이터 조회
+    results = query.order_by(Announcement.is_pinned.desc(), Announcement.created_at.desc()).offset(page * size).limit(size).all()
 
+    # 응답 데이터 구성
     content = []
-    for a in items:
-        creator = db.query(User).filter(User.user_id == a.created_by).first()
+    for a, creator_name, dept_name, has_attachment in results:
         content.append(AnnouncementListItem(
             announcementId=a.announcement_id,
             title=a.title,
             isPinned=a.is_pinned,
-            createdByName=creator.name if creator else "",
-            departmentName=get_department_name(a.department_code, db),
+            createdByName=creator_name or "",
+            departmentName=dept_name if a.department_code else "전체",
             createdAt=a.created_at.isoformat(),
+            hasAttachment=has_attachment,
         ))
 
     return AnnouncementListResponse(
