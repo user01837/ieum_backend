@@ -75,7 +75,7 @@ class ProjectCreateRequest(BaseModel):
     businessContent: str
     startDate: Optional[str] = None
     deadline: Optional[str] = None
-    memberUserIds: List[str]
+    memberUserIds: List[int]
 
 class ProjectCreateResponse(BaseModel):
     projectId: int
@@ -97,10 +97,10 @@ class ProjectUpdateRequest(BaseModel):
     secExpectedEffect: Optional[str] = None
     secPostManagement: Optional[str] = None
     coverTitle: Optional[str] = None
-    memberUserIds: List[str]
+    memberUserIds: List[int]
 
 class MemberItem(BaseModel):
-    userId: str
+    userId: int
     name: str
     roleName: str
     departmentName: str

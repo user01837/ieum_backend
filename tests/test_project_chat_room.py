@@ -4,7 +4,9 @@ from app.models import department, task, project_member  # noqa: F401  (register
 
 
 def test_create_project_with_collaborators_creates_chat_room(client, make_user, db_session):
-    collab = make_user("emp002", "이직원")
+    owner = make_user("20260001", "김직원")
+    client.current_user_holder["user"] = owner
+    collab = make_user("20260002", "이직원")
 
     res = client.post(
         "/projects",
@@ -24,7 +26,7 @@ def test_create_project_with_collaborators_creates_chat_room(client, make_user, 
         str(m.user_id)
         for m in db_session.query(ChatRoomMember).filter(ChatRoomMember.room_id == project.chat_room_id).all()
     }
-    assert member_ids == {"emp001", "emp002"}
+    assert member_ids == {"20260001", "20260002"}
 
 
 def test_create_project_without_collaborators_skips_chat_room(client, db_session):
@@ -39,12 +41,15 @@ def test_create_project_without_collaborators_skips_chat_room(client, db_session
 
 
 def test_update_project_adding_collaborator_creates_chat_room_if_missing(client, make_user, db_session):
+    owner = make_user("20260001", "김직원")
+    client.current_user_holder["user"] = owner
+
     res = client.post(
         "/projects",
         json={"name": "테스트 사업", "businessContent": "내용", "memberUserIds": []},
     )
     project_id = res.json()["projectId"]
-    collab = make_user("emp002", "이직원")
+    collab = make_user("20260002", "이직원")
 
     update_res = client.patch(
         f"/projects/{project_id}",
@@ -59,11 +64,14 @@ def test_update_project_adding_collaborator_creates_chat_room_if_missing(client,
         str(m.user_id)
         for m in db_session.query(ChatRoomMember).filter(ChatRoomMember.room_id == project.chat_room_id).all()
     }
-    assert member_ids == {"emp001", "emp002"}
+    assert member_ids == {"20260001", "20260002"}
 
 
 def test_update_project_adding_more_collaborators_reuses_existing_chat_room(client, make_user, db_session):
-    collab1 = make_user("emp002", "이직원")
+    owner = make_user("20260001", "김직원")
+    client.current_user_holder["user"] = owner
+
+    collab1 = make_user("20260002", "이직원")
     create_res = client.post(
         "/projects",
         json={"name": "테스트 사업", "businessContent": "내용", "memberUserIds": [collab1.user_id]},
@@ -72,7 +80,7 @@ def test_update_project_adding_more_collaborators_reuses_existing_chat_room(clie
     project = db_session.query(Project).filter(Project.project_id == project_id).first()
     original_room_id = project.chat_room_id
 
-    collab2 = make_user("emp003", "박직원")
+    collab2 = make_user("20260003", "박직원")
     client.patch(
         f"/projects/{project_id}",
         json={
@@ -89,4 +97,4 @@ def test_update_project_adding_more_collaborators_reuses_existing_chat_room(clie
         str(m.user_id)
         for m in db_session.query(ChatRoomMember).filter(ChatRoomMember.room_id == project.chat_room_id).all()
     }
-    assert member_ids == {"emp001", "emp002", "emp003"}
+    assert member_ids == {"20260001", "20260002", "20260003"}
