@@ -1,6 +1,6 @@
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -40,6 +40,14 @@ class AddMembersRequest(BaseModel):
 
 class RenameRoomRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="새 채팅방 이름")
+
+    @field_validator("name")
+    @classmethod
+    def name_must_not_be_blank(cls, v: str) -> str:
+        stripped = v.strip()
+        if not stripped:
+            raise ValueError("공백만으로는 채팅방 이름을 지정할 수 없습니다.")
+        return stripped
 
 
 @router.post("/rooms", response_model=RoomResponse, status_code=status.HTTP_201_CREATED)
@@ -181,7 +189,7 @@ def rename_room_endpoint(
     if not chat_service.is_room_member(db, room_id, str(current_user.user_id)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="해당 채팅방의 멤버가 아닙니다.")
 
-    room = chat_service.rename_room(db, room, req.name.strip())
+    room = chat_service.rename_room(db, room, req.name)
 
     member_ids = [
         str(m.user_id)

@@ -102,3 +102,11 @@ def test_rename_room_rejects_empty_name(client, make_user):
 
     res = client.patch(f"/chat/rooms/{room['room_id']}", json={"name": ""})
     assert res.status_code == 422
+
+
+def test_rename_room_rejects_whitespace_only_name(client, make_user):
+    m2 = make_user("emp002", "이직원")
+    room = client.post("/chat/rooms", json={"member_ids": [m2.user_id]}).json()
+
+    res = client.patch(f"/chat/rooms/{room['room_id']}", json={"name": "   "})
+    assert res.status_code == 422
