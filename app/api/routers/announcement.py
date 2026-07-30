@@ -42,14 +42,16 @@ def get_department_name(department_code: Optional[str], db: Session) -> str:
 # ----------------------------------------------------------------
 
 class AnnouncementCreateRequest(BaseModel):
-    title:     str
-    content:   str
-    is_pinned: bool = False
+    title:           str
+    content:         str
+    is_pinned:       bool = False
+    department_code: Optional[str] = None
 
 class AnnouncementUpdateRequest(BaseModel):
-    title:     Optional[str] = None
-    content:   Optional[str] = None
-    is_pinned: Optional[bool] = None
+    title:           Optional[str] = None
+    content:         Optional[str] = None
+    is_pinned:       Optional[bool] = None
+    department_code: Optional[str] = None
 
 class AnnouncementListItem(BaseModel):
     announcementId: int
@@ -71,6 +73,7 @@ class AnnouncementDetailResponse(BaseModel):
     title:          str
     content:        str
     isPinned:       bool
+    createdBy:      int
     createdByName:  str
     updatedByName:  Optional[str]
     departmentName:  Optional[str]
@@ -87,18 +90,29 @@ def get_announcement_list(
     page: int = Query(0, ge=0),
     size: int = Query(10, ge=1),
     keyword: Optional[str] = Query(None),
+    department_code: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
 
 
-    query = db.query(Announcement).filter(
-        Announcement.is_deleted == False,
-        or_(
-            Announcement.department_code == None,
-            Announcement.department_code == current_user.department_code,
+    if current_user.system_role_code == "02":
+        query = db.query(Announcement).filter(Announcement.is_deleted == False)
+        if department_code:
+            query = query.filter(Announcement.department_code == department_code)
+    else:
+        query = db.query(Announcement).filter(
+            Announcement.is_deleted == False,
         )
-    )
+        if department_code:
+            query = query.filter(Announcement.department_code == department_code)
+        else:
+            query = query.filter(
+                or_(
+                    Announcement.department_code == None,
+                    Announcement.department_code == current_user.department_code,
+                )
+            )
     if keyword:
         query = query.filter(Announcement.title.like(f"%{keyword}%"))
 
@@ -150,6 +164,7 @@ def get_announcement_detail(
         title=a.title,
         content=a.content,
         isPinned=a.is_pinned,
+        createdBy=a.created_by,
         createdByName=creator.name if creator else "",
         updatedByName=updater.name if updater else None,
         departmentName=get_department_name(a.department_code, db),
@@ -172,7 +187,7 @@ def create_announcement(
         content=body.content,
         is_pinned=body.is_pinned,
         created_by=current_user.user_id,
-        department_code=None if current_user.system_role_code == "02" else current_user.department_code,
+        department_code=body.department_code if current_user.system_role_code == "02" else current_user.department_code,
     )
     db.add(a)
     db.commit()
@@ -220,6 +235,8 @@ def update_announcement(
         a.content = body.content
     if body.is_pinned is not None:
         a.is_pinned = body.is_pinned
+    if body.department_code is not None:
+        a.department_code = body.department_code
     a.updated_by = current_user.user_id
 
     db.commit()
