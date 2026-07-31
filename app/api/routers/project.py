@@ -701,7 +701,7 @@ def get_ai_draft(
         res = httpx.post(
             f"{AI_SERVER}/api/task-draft",
             json=payload,
-            timeout=280.0,
+            timeout=480.0,
         )
         res.raise_for_status()
         data = res.json()
