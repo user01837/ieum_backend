@@ -188,10 +188,46 @@ def create_user(
     )
 
     db.add(new_user)
+    db.flush()
+
+    # --- 전임자 지정 시 사업 승계 로직 ---
+    if request.predecessorUserId:
+        predecessor_id = request.predecessorUserId
+        successor_id = request.userId
+        predecessor_user = db.query(User).filter(User.user_id == predecessor_id).first()
+
+        # 1. 전임자가 직접 주관 중인 저장된 사업 → 후임자로 이관
+        predecessor_owner_memberships = db.query(ProjectMember).join(
+            Project, ProjectMember.project_id == Project.project_id
+        ).filter(
+            ProjectMember.user_id == predecessor_id,
+            ProjectMember.role_code == "01",
+            Project.stage_code == "01",
+        ).all()
+
+        for pm in predecessor_owner_memberships:
+            existing = db.query(ProjectMember).filter(
+                ProjectMember.project_id == pm.project_id,
+                ProjectMember.user_id == successor_id,
+            ).first()
+            if existing:
+                existing.role_code = "01"
+                pm.role_code = "02"
+            else:
+                pm.user_id = successor_id
+            db.add(ProjectMemberHistory(
+                project_id=pm.project_id,
+                from_user_id=predecessor_id,
+                to_user_id=successor_id,
+                change_type="01",
+            ))
+
+        # 2. 부장한테 임시 이관됐던 저장 사업 → 후임자로 재배정
+        _transfer_temporarily_assigned_projects(db, predecessor_id, successor_id)
+
     db.commit()
 
     return UserCreationResponse(userId=str(new_user.user_id), name=new_user.name, message="신규 직원이 성공적으로 생성되었습니다.")
-
 
 def _transfer_petitions_on_user_change(
     db: Session,
@@ -246,6 +282,48 @@ def _transfer_petitions_on_user_change(
                 change_type="02",
             ))
 
+# 사업
+def _transfer_temporarily_assigned_projects(
+    db: Session,
+    predecessor_id: str,
+    successor_id: str,
+):
+    """
+    전임자로부터 임시 이관(change_type='02')받은 부장이
+    현재도 주관자(role_code='01')인 저장(stage_code='01') 사업
+    → 후임자로 정식 이관(change_type='01')
+    부서 이동 여부와 무관하게 PROJECT_MEMBER_HISTORY 이력 기반으로 조회
+    """
+    projects_to_transfer = db.query(ProjectMember, ProjectMemberHistory).join(
+        ProjectMemberHistory,
+        (ProjectMember.project_id == ProjectMemberHistory.project_id) &
+        (ProjectMember.user_id == ProjectMemberHistory.to_user_id)
+    ).join(
+        Project, ProjectMember.project_id == Project.project_id
+    ).filter(
+        ProjectMemberHistory.from_user_id == predecessor_id,
+        ProjectMemberHistory.change_type == "02",
+        ProjectMember.role_code == "01",
+        Project.stage_code == "01",
+    ).all()
+
+    for pm, history in projects_to_transfer:
+        current_manager_id = pm.user_id
+        existing = db.query(ProjectMember).filter(
+            ProjectMember.project_id == pm.project_id,
+            ProjectMember.user_id == successor_id,
+        ).first()
+        if existing:
+            existing.role_code = "01"
+            pm.role_code = "02"
+        else:
+            pm.user_id = successor_id
+        db.add(ProjectMemberHistory(
+            project_id=pm.project_id,
+            from_user_id=current_manager_id,
+            to_user_id=successor_id,
+            change_type="01",
+        ))
 
 @router.patch(
     "/users/{userId}",
@@ -293,14 +371,12 @@ def update_user(
                     transfer_to_id = successor.user_id
                     transfer_change_type = "01"
                 else:
-                    new_dept_head = db.query(User).filter(User.department_code == request.departmentCode, User.position_code == "01").first()
-                    if new_dept_head:
-                        transfer_to_id = new_dept_head.user_id
-                        transfer_change_type = "02"
-                    else:
-                        old_dept_head = db.query(User).filter(User.department_code == user_to_update.department_code, User.position_code == "01").first()
-                        transfer_to_id = old_dept_head.user_id if old_dept_head else None
-                        transfer_change_type = "02"
+                    old_dept_head = db.query(User).filter(
+                        User.department_code == user_to_update.department_code,
+                        User.position_code == "01"
+                    ).first()
+                    transfer_to_id = old_dept_head.user_id if old_dept_head else None
+                    transfer_change_type = "02"
 
                 if transfer_to_id:
                     for pm in incomplete_project_memberships:
@@ -338,6 +414,49 @@ def update_user(
         # 퇴직 또는 휴직 처리 시 미완료 민원 이관
         if request.statusCode in ['02', '03'] and user_to_update.status_code != request.statusCode:
             _transfer_petitions_on_user_change(db, user_to_update, user_to_update.department_code)
+
+            # 퇴직 또는 휴직 처리 시 미완료 사업 이관
+            status_moving_user_id = userId
+            status_successor = db.query(User).filter(User.predecessor_user_id == status_moving_user_id).first()
+
+            incomplete_project_memberships = db.query(ProjectMember).join(
+                Project, ProjectMember.project_id == Project.project_id
+            ).filter(
+                ProjectMember.user_id == status_moving_user_id,
+                ProjectMember.role_code == "01",
+                Project.stage_code == "01",
+            ).all()
+
+            if incomplete_project_memberships:
+                if status_successor:
+                    status_transfer_to_id = status_successor.user_id
+                    status_transfer_change_type = "01"
+                else:
+                    dept_head = db.query(User).filter(
+                        User.department_code == user_to_update.department_code,
+                        User.position_code == "01"
+                    ).first()
+                    status_transfer_to_id = dept_head.user_id if dept_head else None
+                    status_transfer_change_type = "02"
+
+                if status_transfer_to_id:
+                    for pm in incomplete_project_memberships:
+                        existing = db.query(ProjectMember).filter(
+                            ProjectMember.project_id == pm.project_id,
+                            ProjectMember.user_id == status_transfer_to_id
+                        ).first()
+                        if existing:
+                            existing.role_code = "01"
+                            pm.role_code = "02"
+                        else:
+                            pm.user_id = status_transfer_to_id
+                        db.add(ProjectMemberHistory(
+                            project_id=pm.project_id,
+                            from_user_id=status_moving_user_id,
+                            to_user_id=status_transfer_to_id,
+                            change_type=status_transfer_change_type,
+                        ))
+
         user_to_update.status_code = request.statusCode
 
     if "predecessorUserId" in update_data:
@@ -415,47 +534,8 @@ def update_user(
                     pm.user_id = successor_id
                 db.add(ProjectMemberHistory(project_id=pm.project_id, from_user_id=predecessor_id, to_user_id=successor_id, change_type="01"))
 
-            project_dept_head = db.query(User).filter(
-                User.department_code == predecessor_user.department_code,
-                User.position_code == "01",
-            ).first()
-
-            if project_dept_head:
-                dept_head_id = project_dept_head.user_id
-
-                latest_project_history_subquery = db.query(
-                    ProjectMemberHistory.project_id,
-                    func.max(ProjectMemberHistory.history_id).label('max_history_id')
-                ).group_by(ProjectMemberHistory.project_id).subquery()
-
-                projects_to_transfer = db.query(ProjectMember).join(
-                    Project, ProjectMember.project_id == Project.project_id
-                ).join(
-                    ProjectMemberHistory, ProjectMember.project_id == ProjectMemberHistory.project_id
-                ).join(
-                    latest_project_history_subquery,
-                    (ProjectMemberHistory.project_id == latest_project_history_subquery.c.project_id) &
-                    (ProjectMemberHistory.history_id == latest_project_history_subquery.c.max_history_id)
-                ).filter(
-                    ProjectMember.user_id == dept_head_id,
-                    ProjectMember.role_code == "01",
-                    Project.stage_code == "01",
-                    ProjectMemberHistory.from_user_id == predecessor_id,
-                    ProjectMemberHistory.to_user_id == dept_head_id,
-                    ProjectMemberHistory.change_type == "02",
-                ).all()
-
-                for pm in projects_to_transfer:
-                    existing = db.query(ProjectMember).filter(
-                        ProjectMember.project_id == pm.project_id,
-                        ProjectMember.user_id == successor_id,
-                    ).first()
-                    if existing:
-                        existing.role_code = "01"
-                        pm.role_code = "02"
-                    else:
-                        pm.user_id = successor_id
-                    db.add(ProjectMemberHistory(project_id=pm.project_id, from_user_id=dept_head_id, to_user_id=successor_id, change_type="01"))
+            # 부장한테 임시 이관됐던 저장 사업 → 후임자로 재배정
+            _transfer_temporarily_assigned_projects(db, predecessor_id, successor_id)
 
             # --- 담당 업무(Task) 승계 로직 ---
             predecessor_task_ids = {row.task_id for row in db.query(TaskAssignee.task_id).filter(TaskAssignee.user_id == str(predecessor_id)).all()}
