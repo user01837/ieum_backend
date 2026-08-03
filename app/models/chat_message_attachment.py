@@ -4,7 +4,7 @@ from sqlalchemy.orm import relationship
 from app.db.database import Base
 
 class ChatMessageAttachment(Base):
-    __tablename__ = "chat_message_attachment"
+    __tablename__ = "CHAT_MESSAGE_ATTACHMENT"
 
     attachment_id = Column(Integer, primary_key=True, autoincrement=True)
     message_id = Column(Integer, ForeignKey("CHAT_MESSAGE.message_id"))
