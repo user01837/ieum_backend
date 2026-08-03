@@ -305,28 +305,32 @@ def get_home_dashboard(
 
     # 일반 사용자 대시보드
     else:
-        # 1. 내 민원 현황 (이번 달)
+        # 1. 내 민원 현황
         first_day_of_month = today.replace(day=1)
+        first_day_of_last_month = (first_day_of_month - timedelta(days=1)).replace(day=1)
 
-        my_petitions_this_month_query = db.query(Petition).filter(
+        summary_stats = db.query(
+            func.count(Petition.petition_id).label("total"),
+            func.sum(case((Petition.status_code == '01', 1), else_=0)).label("waiting"),
+            func.sum(case((Petition.status_code == '02', 1), else_=0)).label("checked"),
+            func.sum(case((Petition.status_code == '03', 1), else_=0)).label("in_progress"),
+            func.sum(case((Petition.status_code == '04', 1), else_=0)).label("completed"),
+            func.sum(case(
+                (and_(Petition.status_code != '04', Petition.due_date != None, Petition.due_date < today), 1), else_=0
+            )).label("delayed")
+        ).filter(
             Petition.assignee_user_id == current_user.user_id,
-            Petition.received_at >= first_day_of_month,
-        )
+            or_(
+                Petition.received_at >= first_day_of_month,
+                and_(
+                    Petition.received_at >= first_day_of_last_month,
+                    Petition.received_at < first_day_of_month,
+                    Petition.status_code != '04'
+                )
+            )
+        ).one()
 
-        total = my_petitions_this_month_query.count()
-        waiting = my_petitions_this_month_query.filter(Petition.status_code == "01").count()
-        checked = my_petitions_this_month_query.filter(Petition.status_code == "02").count()
-        in_progress = my_petitions_this_month_query.filter(Petition.status_code == "03").count()
-        completed = my_petitions_this_month_query.filter(Petition.status_code == "04").count()
-
-        delayed = my_petitions_this_month_query.filter(
-            Petition.status_code != "04",
-            Petition.due_date != None,
-            Petition.due_date < today,
-        ).count()
-
-
-        my_petition_summary = MyPetitionSummary(total=total, waiting=waiting, checked=checked, inProgress=in_progress, completed=completed, delayed=delayed)
+        my_petition_summary = MyPetitionSummary(total=summary_stats.total or 0, waiting=summary_stats.waiting or 0, checked=summary_stats.checked or 0, inProgress=summary_stats.in_progress or 0, completed=summary_stats.completed or 0, delayed=summary_stats.delayed or 0)
  
         # 2. 공지사항 (최근 4개)
         announcement_results = db.query(Announcement).filter(
