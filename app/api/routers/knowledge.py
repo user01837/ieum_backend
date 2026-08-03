@@ -1,9 +1,13 @@
+import logging
+
+import httpx
 from fastapi import APIRouter, Depends, Query, HTTPException, status, Form, File, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy import func, or_, and_
 from typing import List, Optional
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.api.routers.auth import get_current_user
 from app.models.user import User
@@ -11,6 +15,8 @@ from app.models.task import Task
 from app.models.knowledge import Knowledge, KnowledgeAttachment, KnowledgeLog, KnowledgeLogTag, KnowledgeTag
 from app.services.s3_service import upload_file_to_s3
 from app.models.department import Department
+
+logger = logging.getLogger(__name__)
 
 # --- 상수 ---
 CATEGORY_NAME_MAP = {
@@ -115,6 +121,73 @@ class LogResponse(BaseModel):
 class LogUpdateRequest(BaseModel):
     content: Optional[str] = Field(None, description="수정할 노하우 내용")
     tag_ids: Optional[List[int]] = Field(None, description="새롭게 연결할 태그 ID 목록 (기존 연결은 모두 대체됨)")
+
+
+# --- AI 서버 색인 동기화 헬퍼 ---
+
+def _aggregate_active_log_content_and_tags(db: Session, knowledge_id: int) -> tuple[str, List[str]]:
+    """카드에 달린 삭제되지 않은 노하우(로그)를 모두 합쳐 색인용 본문과 태그 목록을 만든다.
+    AI 서버 쪽 색인은 knowledge_id당 문서 1개뿐이라, 여기서 미리 합쳐 넘기지 않으면
+    최근 로그 하나만 남고 나머지 로그 내용은 검색에서 사라진다."""
+    logs = db.query(KnowledgeLog).filter(
+        KnowledgeLog.knowledge_id == knowledge_id,
+        KnowledgeLog.is_deleted == 0,
+    ).order_by(KnowledgeLog.created_at.asc()).all()
+
+    content = "\n\n".join(log.content for log in logs if log.content)
+
+    tag_names: List[str] = []
+    if logs:
+        log_ids = [log.log_id for log in logs]
+        tag_rows = db.query(KnowledgeTag.name).join(
+            KnowledgeLogTag, KnowledgeLogTag.tag_id == KnowledgeTag.tag_id
+        ).filter(KnowledgeLogTag.log_id.in_(log_ids)).distinct().all()
+        tag_names = [name for (name,) in tag_rows]
+
+    return content, tag_names
+
+
+def _sync_knowledge_index(db: Session, knowledge_id: int) -> None:
+    """지식 카드 + 그 카드의 모든 활성 노하우를 AI 서버(ChromaDB)에 재색인.
+    노하우 생성/수정/삭제, 카드 제목·요약·주의사항·범위 수정 시 호출한다.
+    AI 서버 오류는 색인 실패로만 그치고 DB 작업 자체는 막지 않는다
+    (petition.py/_call_ai_to_index_petition, task.py의 색인 호출과 동일한 정책)."""
+    knowledge = db.query(Knowledge).filter(Knowledge.knowledge_id == knowledge_id).first()
+    if not knowledge:
+        return
+
+    content, tag_names = _aggregate_active_log_content_and_tags(db, knowledge_id)
+
+    try:
+        index_url = f"{settings.AI_SERVER.rstrip('/')}/api/knowledge/index"
+        response = httpx.post(
+            index_url,
+            json={
+                "knowledge_id": knowledge.knowledge_id,
+                "department_code": knowledge.department_code,
+                "category_code": knowledge.category_code,
+                "scope_code": knowledge.scope_code,
+                "title": knowledge.title,
+                "summary": knowledge.summary or "",
+                "content": content,
+                "warning_note": knowledge.warning_note or "",
+                "tags": tag_names,
+            },
+            timeout=30.0,
+        )
+        response.raise_for_status()
+    except Exception as e:
+        logger.warning("지식카드 색인 실패(knowledge_id=%s): %s", knowledge_id, e)
+
+
+def _remove_knowledge_index(knowledge_id: int) -> None:
+    """지식 카드 삭제 시 AI 서버(ChromaDB) 색인도 함께 삭제(soft) 처리."""
+    try:
+        deindex_url = f"{settings.AI_SERVER.rstrip('/')}/api/knowledge/{knowledge_id}"
+        response = httpx.delete(deindex_url, timeout=30.0)
+        response.raise_for_status()
+    except Exception as e:
+        logger.warning("지식카드 색인 삭제 실패(knowledge_id=%s): %s", knowledge_id, e)
 
 
 # --- 라우터 ---
@@ -508,6 +581,7 @@ def create_knowledge_log(
             db.add(KnowledgeLogTag(log_id=new_log.log_id, tag_id=tag_id))
 
     db.commit()
+    _sync_knowledge_index(db, knowledge_id)
     return LogResponse(log_id=new_log.log_id, message="노하우가 성공적으로 등록되었습니다.")
 
 @router.patch(
@@ -546,6 +620,7 @@ def update_knowledge_log(
 
     log_to_update.updated_by = current_user.user_id
     db.commit()
+    _sync_knowledge_index(db, log_to_update.knowledge_id)
     return LogResponse(log_id=log_id, message="노하우가 성공적으로 수정되었습니다.")
 
 @router.delete(
@@ -575,6 +650,7 @@ def delete_knowledge_log(
     log_to_delete.is_deleted = True
     log_to_delete.deleted_at = func.now()
     db.commit()
+    _sync_knowledge_index(db, log_to_delete.knowledge_id)
 
 @router.patch(
     "/{knowledge_id}",
@@ -650,6 +726,7 @@ def update_knowledge(
     # 6. DB에 최종 커밋 및 응답 반환
     knowledge_to_update.updated_by = current_user.user_id
     db.commit()
+    _sync_knowledge_index(db, knowledge_id)
 
     return KnowledgeUpdateResponse(knowledge_id=knowledge_id, message="지식 카드가 성공적으로 수정되었습니다.")
 
@@ -686,3 +763,4 @@ def delete_knowledge(
     knowledge_to_delete.is_deleted = True
     knowledge_to_delete.deleted_at = func.now()
     db.commit()
+    _remove_knowledge_index(knowledge_id)
