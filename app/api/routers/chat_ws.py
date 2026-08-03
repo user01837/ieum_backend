@@ -53,6 +53,81 @@ def _resolve_user_id(token: str) -> str | None:
         return str(user.user_id) if user is not None else None
 
 
+async def broadcast_new_message(
+    db: Session,
+    room_id: int,
+    sender_id: str,
+    message,
+    attachments: list[dict] | None = None,
+) -> None:
+    """이미 커밋된 메시지 1건을 방 참여자들에게 웹소켓으로 전달하고, 필요한 경우
+    알림(row 생성 + 실시간 push 또는 FCM)까지 처리한다.
+
+    웹소켓 send_message 핸들러와 REST 첨부파일 전송 엔드포인트가 공유하는 경로다.
+    두 경로 모두 메시지를 각자 저장한 뒤 이 함수를 호출해 알림 로직을 한 곳에서만
+    유지한다.
+    """
+    message_id = message.message_id
+    message_payload = {
+        "type": "new_message",
+        "room_id": room_id,
+        "message": {
+            "message_id": message_id,
+            "room_id": room_id,
+            "sender_id": sender_id,
+            "content": message.content,
+            "created_at": message.created_at.isoformat(),
+            "attachments": attachments or [],
+        },
+    }
+
+    await _broadcast(chat_manager.connections_for_user(sender_id), message_payload)
+
+    for recipient_id in chat_service.other_member_ids(db, room_id, sender_id):
+        recipient_sockets = chat_manager.connections_for_user(recipient_id)
+        viewing_sockets = {
+            s for s in recipient_sockets if chat_manager.is_viewing_room(s, room_id)
+        }
+        elsewhere_sockets = recipient_sockets - viewing_sockets
+
+        if viewing_sockets:
+            # 보고 있는 탭이 하나라도 있으면 이 방을 보는 중 -> 다른 탭에도 동기화만, 알림 없음
+            await _broadcast(viewing_sockets, message_payload)
+            if elsewhere_sockets:
+                await _broadcast(elsewhere_sockets, message_payload)
+        else:
+            notification = chat_service.create_notification(
+                db, recipient_id, room_id, message_id
+            )
+            if elsewhere_sockets:
+                notif_payload = {
+                    "type": "notification",
+                    "notification": {
+                        "notification_id": notification.notification_id,
+                        "room_id": room_id,
+                        "message_id": message_id,
+                        "created_at": notification.created_at.isoformat(),
+                    },
+                }
+                await _broadcast(elsewhere_sockets, message_payload)
+                await _broadcast(elsewhere_sockets, notif_payload)
+            else:
+                # elsewhere_sockets가 비어있고 recipient_sockets도 비어있으면(오프라인)
+                # 알림 row만 생성되고 소켓 전송은 없다 - 대신 FCM 푸시를 발송한다.
+                # messaging.send()는 동기 HTTPS 호출(토큰당 100~300ms)이라
+                # 이벤트 루프에서 직접 호출하면 다른 모든 사용자의 트래픽이 멈춘다.
+                #
+                # 바로 위 create_notification의 commit이 (sessionmaker 기본값인
+                # expire_on_commit=True 때문에) message를 포함한 세션의 모든 객체를
+                # 만료시킨다. 그대로 넘기면 워커 스레드에서 message.content를 읽는 순간
+                # lazy load SELECT가 그쪽 스레드에서 나가는데, Session은 스레드 안전하지
+                # 않다. 세션을 소유한 이 스레드에서 미리 접근해 값을 다시 적재한다.
+                _ = message.content, message.message_id
+                await run_in_threadpool(
+                    fcm_service.send_new_message_push, db, recipient_id, room_id, message
+                )
+
+
 async def _handle_send_message(user_id: str, room_id: int, content: str) -> None:
     """메시지 1건을 처리한다. 이 함수 안에서만 DB 세션이 열려 있고, 끝나면 즉시 반납된다.
 
@@ -64,65 +139,7 @@ async def _handle_send_message(user_id: str, room_id: int, content: str) -> None
                 return
 
             message = chat_service.record_message(db, room_id, user_id, content)
-            # 세션이 닫힌 뒤 lazy load가 발생하지 않도록 필요한 값은 모두 여기서 읽어둔다.
-            message_id = message.message_id
-            message_payload = {
-                "type": "new_message",
-                "room_id": room_id,
-                "message": {
-                    "message_id": message_id,
-                    "room_id": room_id,
-                    "sender_id": user_id,
-                    "content": message.content,
-                    "created_at": message.created_at.isoformat(),
-                },
-            }
-
-            await _broadcast(chat_manager.connections_for_user(user_id), message_payload)
-
-            for recipient_id in chat_service.other_member_ids(db, room_id, user_id):
-                recipient_sockets = chat_manager.connections_for_user(recipient_id)
-                viewing_sockets = {
-                    s for s in recipient_sockets if chat_manager.is_viewing_room(s, room_id)
-                }
-                elsewhere_sockets = recipient_sockets - viewing_sockets
-
-                if viewing_sockets:
-                    # 보고 있는 탭이 하나라도 있으면 이 방을 보는 중 -> 다른 탭에도 동기화만, 알림 없음
-                    await _broadcast(viewing_sockets, message_payload)
-                    if elsewhere_sockets:
-                        await _broadcast(elsewhere_sockets, message_payload)
-                else:
-                    notification = chat_service.create_notification(
-                        db, recipient_id, room_id, message_id
-                    )
-                    if elsewhere_sockets:
-                        notif_payload = {
-                            "type": "notification",
-                            "notification": {
-                                "notification_id": notification.notification_id,
-                                "room_id": room_id,
-                                "message_id": message_id,
-                                "created_at": notification.created_at.isoformat(),
-                            },
-                        }
-                        await _broadcast(elsewhere_sockets, message_payload)
-                        await _broadcast(elsewhere_sockets, notif_payload)
-                    else:
-                        # elsewhere_sockets가 비어있고 recipient_sockets도 비어있으면(오프라인)
-                        # 알림 row만 생성되고 소켓 전송은 없다 - 대신 FCM 푸시를 발송한다.
-                        # messaging.send()는 동기 HTTPS 호출(토큰당 100~300ms)이라
-                        # 이벤트 루프에서 직접 호출하면 다른 모든 사용자의 트래픽이 멈춘다.
-                        #
-                        # 바로 위 create_notification의 commit이 (sessionmaker 기본값인
-                        # expire_on_commit=True 때문에) message를 포함한 세션의 모든 객체를
-                        # 만료시킨다. 그대로 넘기면 워커 스레드에서 message.content를 읽는 순간
-                        # lazy load SELECT가 그쪽 스레드에서 나가는데, Session은 스레드 안전하지
-                        # 않다. 세션을 소유한 이 스레드에서 미리 접근해 값을 다시 적재한다.
-                        _ = message.content, message.message_id
-                        await run_in_threadpool(
-                            fcm_service.send_new_message_push, db, recipient_id, room_id, message
-                        )
+            await broadcast_new_message(db, room_id, user_id, message)
         except WebSocketDisconnect:
             raise
         except Exception:

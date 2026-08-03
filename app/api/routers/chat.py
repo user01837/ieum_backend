@@ -1,3 +1,4 @@
+import logging
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query, status, File, UploadFile, Form
 from pydantic import BaseModel, Field, field_validator
@@ -10,9 +11,11 @@ from app.models.chat import ChatRoom, ChatRoomMember, ChatMessage
 from app.services import chat_service
 from app.models.chat_message_attachment import ChatMessageAttachment
 from app.services.s3_service import upload_file_to_s3
+from app.api.routers.chat_ws import broadcast_new_message
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class CreateRoomRequest(BaseModel):
@@ -156,8 +159,18 @@ async def send_message_with_attachment(
         ) for att in db_attachments
     ]
 
-    # TODO: 웹소켓을 통해 이 메시지를 채팅방 참여자들에게 전송하는 로직 필요
-    # chat_service.broadcast_message(room_id, new_message, attachment_infos)
+    # 메시지 자체는 이미 커밋됐으니, 브로드캐스트/알림 실패가 전송 자체를 실패로
+    # 되돌리면 안 된다 - 웹소켓 send_message 핸들러와 동일하게 별도로 격리한다.
+    try:
+        await broadcast_new_message(
+            db,
+            room_id,
+            str(current_user.user_id),
+            new_message,
+            attachments=[a.model_dump() for a in attachment_infos],
+        )
+    except Exception:
+        logger.exception("메시지 브로드캐스트/알림 처리 실패 (room_id=%s)", room_id)
 
     return MessageResponse(
         message_id=new_message.message_id,
