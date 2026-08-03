@@ -225,6 +225,28 @@ def create_user(
         # 2. 부장한테 임시 이관됐던 저장 사업 → 후임자로 재배정
         _transfer_temporarily_assigned_projects(db, predecessor_id, successor_id)
 
+        # --- 전임자 지정 시 민원 승계 로직 ---
+        predecessor_petitions = db.query(Petition).filter(
+            Petition.assignee_user_id == predecessor_id,
+            Petition.status_code != '04'
+        ).all()
+
+        for p in predecessor_petitions:
+            p.assignee_user_id = successor_id
+            p.status_code = "01"  # 후임자가 확인하도록 '대기중'으로 변경
+            db.add(PetitionAssigneeHistory(
+                petition_id=p.petition_id,
+                from_user_id=predecessor_id,
+                to_user_id=successor_id,
+                change_type="01",  # 정식 승계
+            ))
+
+        # --- 전임자 지정 시 담당 업무(Task) 승계 로직 ---
+        predecessor_task_ids = {row.task_id for row in db.query(TaskAssignee.task_id).filter(TaskAssignee.user_id == str(predecessor_id)).all()}
+        for task_id in predecessor_task_ids:
+            # 이미 배정된 업무는 중복 추가되지 않도록 별도 확인 없이 추가 (PK 위반 시 무시됨)
+            db.merge(TaskAssignee(user_id=str(successor_id), task_id=task_id))
+
     db.commit()
 
     return UserCreationResponse(userId=str(new_user.user_id), name=new_user.name, message="신규 직원이 성공적으로 생성되었습니다.")
@@ -351,11 +373,14 @@ def update_user(
     # 부서 변경을 가장 먼저 처리
     if "departmentCode" in update_data and request.departmentCode:
         if user_to_update.department_code != request.departmentCode:
+            # 이관 로직을 위해 이전 부서 코드를 저장
+            old_department_code = user_to_update.department_code
             moving_user_id = userId
             successor = db.query(User).filter(User.predecessor_user_id == moving_user_id).first()
 
             # --- 부서 이동에 따른 미완료 민원 이관 로직 ---
-            _transfer_petitions_on_user_change(db, user_to_update, request.departmentCode)
+            # ★★★ 중요: 민원은 '이전' 부서의 부장에게 이관되어야 합니다.
+            _transfer_petitions_on_user_change(db, user_to_update, old_department_code)
 
             # --- 부서 이동에 따른 미완료 사업 이관 로직 ---
             incomplete_project_memberships = db.query(ProjectMember).join(
@@ -371,7 +396,7 @@ def update_user(
                     transfer_to_id = successor.user_id
                     transfer_change_type = "01"
                 else:
-                    old_dept_head = db.query(User).filter(
+                    old_dept_head = db.query(User).filter( # 기존 부서의 부장
                         User.department_code == user_to_update.department_code,
                         User.position_code == "01"
                     ).first()
