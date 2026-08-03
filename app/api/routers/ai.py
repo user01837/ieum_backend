@@ -24,6 +24,29 @@ class LegalChatResponse(BaseModel):
     answer: str
     referenced_articles: List[ReferencedArticle]
 
+# --- 노하우(지식베이스) 챗봇 스키마 ---
+
+class KnowledgeChatRequest(BaseModel):
+    """챗봇 - 노하우 모드 질문 요청 스키마"""
+    question: str = Field(..., description="사용자의 질문")
+
+class ReferencedKnowledge(BaseModel):
+    """참고 노하우 카드 정보 스키마"""
+    knowledge_id: int
+    title: str
+    summary: Optional[str] = None
+    content: Optional[str] = None
+    warning_note: Optional[str] = None
+    category_code: Optional[str] = None
+    tags: Optional[str] = None  # AI 서버가 콤마로 합쳐서 반환 (예: "태그1,태그2")
+    similarity: float
+    rerank_score: Optional[float] = None
+
+class KnowledgeChatResponse(BaseModel):
+    """챗봇 - 노하우 모드 답변 응답 스키마"""
+    answer: str
+    referenced_knowledge: List[ReferencedKnowledge]
+
 # --- 유사 민원 검색 스키마 ---
 
 class SimilarPetitionsRequest(BaseModel):
@@ -91,12 +114,46 @@ async def proxy_legal_chat(
             ai_endpoint_url = f"{settings.AI_SERVER.rstrip('/')}/api/legal-chat"
 
             # AI 서버에 POST 요청 전송
+            # CPU 추론 환경에서는 60초를 넘기는 경우가 있어 AI 서버 쪽 타임아웃(120초)과 맞춘다.
             response = await client.post(
                 ai_endpoint_url,
                 json={"question": request.question},
-                timeout=60.0  # AI 응답 시간을 고려하여 타임아웃을 넉넉하게 설정
+                timeout=120.0
             )
             response.raise_for_status()  # 2xx가 아닌 응답 코드는 예외 발생
+            return response.json()
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"AI 서버에 연결할 수 없습니다: {exc}")
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(status_code=exc.response.status_code, detail=f"AI 서버에서 오류가 발생했습니다: {exc.response.text}")
+
+@router.post(
+    "/knowledge-chat",
+    response_model=KnowledgeChatResponse,
+    summary="AI 모델 중계 - 노하우(지식베이스) 챗봇",
+    description="챗봇의 '노하우' 모드 질문을 AI 서버로 전달하고 그 결과를 반환하는 중계 API입니다."
+)
+async def proxy_knowledge_chat(
+    request: KnowledgeChatRequest,
+    current_user: User = Depends(get_current_user)
+):
+    """
+    로그인한 사용자의 소속 부서를 함께 넘겨, AI 서버가 '내 부서 것 + 전체공개'
+    범위로만 검색하도록 한다. 카테고리는 자유 질문형 챗봇이라 지정하지 않는다
+    (AI 서버 쪽에서 category_code=None이면 전체 카테고리 대상으로 검색).
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            ai_endpoint_url = f"{settings.AI_SERVER.rstrip('/')}/api/knowledge/chat"
+            response = await client.post(
+                ai_endpoint_url,
+                json={
+                    "question": request.question,
+                    "department_code": current_user.department_code,
+                },
+                timeout=60.0
+            )
+            response.raise_for_status()
             return response.json()
         except httpx.RequestError as exc:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"AI 서버에 연결할 수 없습니다: {exc}")
