@@ -48,7 +48,11 @@ pdfmetrics.registerFontFamily(
 )
 
 load_dotenv(".env.local")
-AI_SERVER = os.getenv("AI_SERVER")
+# 다른 라우터들(ai.py, petition.py, task.py)은 전부 settings.AI_SERVER.rstrip('/')로
+# 끝 슬래시를 제거하고 쓰는데 여기만 그대로 썼음 - 배포 환경변수 값 끝에 슬래시가
+# 붙어있으면 "{AI_SERVER}/api/..."가 "//api/..."가 되어 AI 서버에서 404가 난다
+# (실제로 배포 서버에서 /api/task-draft가 이 문제로 즉시 실패하는 게 확인됨).
+AI_SERVER = (os.getenv("AI_SERVER") or "").rstrip("/")
 
 router = APIRouter()
 
