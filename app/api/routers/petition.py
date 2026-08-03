@@ -130,46 +130,71 @@ def _call_ai_to_index_petition(petition_data: dict):
     "/external",
     response_model=ExternalPetitionResponse,
     summary="외부 시스템 민원 접수",
-    responses={
-        status.HTTP_401_UNAUTHORIZED: {"description": "API 키 불일치/누락"},
-    }
 )
 def create_external_petition(
     req: ExternalPetitionRequest,
-    x_api_key: str = Header(..., alias="X-API-Key"),
     db: Session = Depends(get_db),
 ):
     """
-    국민신문고/정부24 같은 외부 민원 채널이 새 민원을 접수할 때 호출하는 엔드포인트.
-    내부 직원용 JWT(get_current_user)가 아니라 API 키로 인증한다.
+    공개 민원 접수 페이지에서 새 민원을 접수하는 엔드포인트.
 
-    ieum_ai의 /api/classify-department로 부서를 자동 분류한다. 분류가 실패해도
-    (AI 서버 다운, 타임아웃 등) 민원 접수 자체는 막지 않고 기본 부서(08 행정·일반)로
-    접수한다 - 담당자는 이후 temp-save에서 담당자/부서를 재배정할 수 있다.
+    로그인이나 JWT 인증 없이 민원을 접수할 수 있다.
+
+    1. AI를 통해 민원 부서를 자동 분류한다.
+    2. AI를 통해 담당 업무(Task)를 자동 분류한다.
+    3. 해당 업무의 담당자 중 처리 중인 민원이 가장 적은 담당자를 자동 배정한다.
+    4. AI 분류가 실패하더라도 민원 접수 자체는 막지 않고
+       기본 부서(08 행정·일반)로 접수한다.
     """
-    if x_api_key != settings.EXTERNAL_PETITION_API_KEY:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="유효하지 않은 API 키입니다.")
 
+    # ---------------------------------------------------------
+    # 1. 민원 부서 자동 분류
+    # ---------------------------------------------------------
     department_code = "08"
+
     try:
-        classify_url = f"{settings.AI_SERVER.rstrip('/')}/api/classify-department"
+        classify_url = (
+            f"{settings.AI_SERVER.rstrip('/')}/api/classify-department"
+        )
+
         response = httpx.post(
             classify_url,
-            json={"title": req.title, "content": req.content},
+            json={
+                "title": req.title,
+                "content": req.content,
+            },
             timeout=60.0,
         )
-        response.raise_for_status()
-        department_code = response.json()["department_code"]
-    except Exception as e:
-        print(f"WARN: 부서 자동분류 실패, 기본 부서(08)로 접수: {e}")
 
+        response.raise_for_status()
+
+        department_code = response.json()["department_code"]
+
+    except Exception as e:
+        print(
+            f"WARN: 부서 자동분류 실패, "
+            f"기본 부서(08)로 접수: {e}"
+        )
+
+    # AI가 존재하지 않는 부서 코드를 반환한 경우
     if department_code not in VALID_DEPARTMENT_CODES:
-        print(f"WARN: ieum_ai가 유효하지 않은 department_code를 반환함({department_code!r}), 기본 부서(08)로 접수")
+        print(
+            f"WARN: ieum_ai가 유효하지 않은 department_code를 반환함 "
+            f"({department_code!r}), 기본 부서(08)로 접수"
+        )
+
         department_code = "08"
 
+    # ---------------------------------------------------------
+    # 2. 담당 업무(Task) 자동 분류
+    # ---------------------------------------------------------
     task_id = None
+
     try:
-        classify_task_url = f"{settings.AI_SERVER.rstrip('/')}/api/classify-task"
+        classify_task_url = (
+            f"{settings.AI_SERVER.rstrip('/')}/api/classify-task"
+        )
+
         task_response = httpx.post(
             classify_task_url,
             json={
@@ -178,40 +203,93 @@ def create_external_petition(
             },
             timeout=60.0,
         )
+
         task_response.raise_for_status()
+
         task_id = task_response.json().get("task_id")
+
     except Exception as e:
-        print(f"WARN: 담당업무 자동분류 실패, 미배정으로 접수: {e}")
+        print(
+            f"WARN: 담당업무 자동분류 실패, "
+            f"미배정으로 접수: {e}"
+        )
 
-    if task_id is not None and db.query(Task.task_id).filter(
-        Task.task_id == task_id,
-        Task.is_deleted == False,
-    ).first() is None:
-        print(f"WARN: ieum_ai가 존재하지 않거나 삭제된 task_id를 반환함({task_id!r}), 미배정으로 접수")
-        task_id = None
-
-    assignee_user_id = None
+    # ---------------------------------------------------------
+    # 3. AI가 반환한 Task가 실제 DB에 존재하는지 확인
+    # ---------------------------------------------------------
     if task_id is not None:
+        task_exists = (
+            db.query(Task.task_id)
+            .filter(
+                Task.task_id == task_id,
+                Task.is_deleted == False,
+            )
+            .first()
+        )
+
+        if task_exists is None:
+            print(
+                f"WARN: ieum_ai가 존재하지 않거나 삭제된 task_id를 반환함 "
+                f"({task_id!r}), 미배정으로 접수"
+            )
+
+            task_id = None
+
+    # ---------------------------------------------------------
+    # 4. 해당 Task 담당자 중 업무량이 가장 적은 담당자 자동 배정
+    # ---------------------------------------------------------
+    assignee_user_id = None
+
+    if task_id is not None:
+
         candidate_ids = [
-            row.user_id for row in
-            db.query(TaskAssignee.user_id).filter(TaskAssignee.task_id == task_id).all()
+            row.user_id
+            for row in (
+                db.query(TaskAssignee.user_id)
+                .filter(
+                    TaskAssignee.task_id == task_id
+                )
+                .all()
+            )
         ]
+
         if candidate_ids:
-            open_counts = {uid: 0 for uid in candidate_ids}
+
+            # 담당자별 현재 미완료 민원 수
+            open_counts = {
+                user_id: 0
+                for user_id in candidate_ids
+            }
+
             counted = (
-                db.query(Petition.assignee_user_id, func.count(Petition.petition_id))
+                db.query(
+                    Petition.assignee_user_id,
+                    func.count(Petition.petition_id),
+                )
                 .filter(
                     Petition.assignee_user_id.in_(candidate_ids),
                     Petition.status_code != "04",
                 )
-                .group_by(Petition.assignee_user_id)
+                .group_by(
+                    Petition.assignee_user_id
+                )
                 .all()
             )
-            for uid, cnt in counted:
-                open_counts[uid] = cnt
-            assignee_user_id = min(open_counts, key=open_counts.get)
 
+            for user_id, count in counted:
+                open_counts[user_id] = count
+
+            # 가장 처리 중인 민원이 적은 담당자 선택
+            assignee_user_id = min(
+                open_counts,
+                key=open_counts.get,
+            )
+
+    # ---------------------------------------------------------
+    # 5. 민원 생성
+    # ---------------------------------------------------------
     now = datetime.now()
+
     petition = Petition(
         title=req.title,
         content=req.content,
@@ -222,10 +300,14 @@ def create_external_petition(
         received_at=now,
         due_date=now + timedelta(days=14),
     )
+
     db.add(petition)
     db.commit()
     db.refresh(petition)
 
+    # ---------------------------------------------------------
+    # 6. 접수 결과 반환
+    # ---------------------------------------------------------
     return ExternalPetitionResponse(
         petitionId=petition.petition_id,
         departmentCode=department_code,

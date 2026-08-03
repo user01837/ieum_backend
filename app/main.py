@@ -7,7 +7,7 @@ app = FastAPI()
 app.include_router(dashboard.router, prefix="/dashboard", tags=["Dashboard"])
 app.include_router(chat.router, prefix="/chat", tags=["Chat"])
 app.include_router(notification.router, prefix="/notifications", tags=["Notifications"])
-app.include_router(chat_ws.router, tags=["Chat WebSocket"])
+app.include_router(chat_ws.router, prefix="/api", tags=["Chat WebSocket"])
 app.include_router(announcement.router, prefix="/announcements", tags=["Announcements"])
 
 # --- CORS 미들웨어 설정 ---
