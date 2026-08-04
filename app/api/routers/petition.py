@@ -222,6 +222,7 @@ def create_external_petition(
             db.query(Task.task_id)
             .filter(
                 Task.task_id == task_id,
+                Task.department_code == department_code,
                 Task.is_deleted == False,
             )
             .first()
@@ -229,7 +230,8 @@ def create_external_petition(
 
         if task_exists is None:
             print(
-                f"WARN: ieum_ai가 존재하지 않거나 삭제된 task_id를 반환함 "
+                f"WARN: ieum_ai가 존재하지 않거나 삭제되었거나 "
+                f"다른 부서({department_code})의 task_id를 반환함 "
                 f"({task_id!r}), 미배정으로 접수"
             )
 
