@@ -74,6 +74,76 @@ def test_reassign_cross_department_updates_department_and_clears_task(client, ma
     assert petition.assignee_user_id == "emp002"
 
 
+def test_reassign_to_admin_department_is_rejected(client, make_user, db_session):
+    db_session.add(Department(department_code="01", name="교통부"))
+    db_session.commit()
+
+    make_user("admin001", "관리자", department_code="09")
+
+    task = Task(name="도로 보수", department_code="01")
+    db_session.add(task)
+    db_session.commit()
+    db_session.refresh(task)
+
+    petition = Petition(
+        title="테스트 민원",
+        content="내용",
+        department_code="01",
+        task_id=task.task_id,
+        assignee_user_id="emp001",
+        status_code="02",
+    )
+    db_session.add(petition)
+    db_session.commit()
+    db_session.refresh(petition)
+
+    res = client.put(
+        f"/petitions/{petition.petition_id}/temp-save",
+        data={"assigneeUserId": "admin001"},
+    )
+    assert res.status_code == 400
+
+    db_session.refresh(petition)
+    assert petition.department_code == "01"
+    assert petition.task_id == task.task_id
+    assert petition.assignee_user_id == "emp001"
+
+
+def test_reassign_to_user_without_department_is_rejected(client, make_user, db_session):
+    db_session.add(Department(department_code="01", name="교통부"))
+    db_session.commit()
+
+    make_user("nodept001", "부서없음", department_code=None)
+
+    task = Task(name="도로 보수", department_code="01")
+    db_session.add(task)
+    db_session.commit()
+    db_session.refresh(task)
+
+    petition = Petition(
+        title="테스트 민원",
+        content="내용",
+        department_code="01",
+        task_id=task.task_id,
+        assignee_user_id="emp001",
+        status_code="02",
+    )
+    db_session.add(petition)
+    db_session.commit()
+    db_session.refresh(petition)
+
+    res = client.put(
+        f"/petitions/{petition.petition_id}/temp-save",
+        data={"assigneeUserId": "nodept001"},
+    )
+    assert res.status_code == 400
+
+    db_session.refresh(petition)
+    assert petition.department_code == "01"
+    assert petition.task_id == task.task_id
+    assert petition.assignee_user_id == "emp001"
+
+
 def test_unassign_currently_returns_400_pre_existing_bug(client, db_session):
     """
     담당자 해제(assigneeUserId="")는 FastAPI Form(None) 파싱에서 빈 문자열이

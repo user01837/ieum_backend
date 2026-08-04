@@ -639,6 +639,15 @@ def temp_save_petition(
                         detail="새로 지정할 담당자를 찾을 수 없습니다."
                     )
 
+                # 관리자(부서코드 '09') 또는 부서가 없는 사용자에게는 민원 담당자를 지정할 수 없다.
+                # 이런 사용자로 배정하면 민원의 department_code가 비정상 값으로 동기화되어
+                # 부서별 목록 조회에서 사실상 사라지는 문제가 발생하므로 배정 자체를 거부한다.
+                if new_assignee.department_code not in VALID_DEPARTMENT_CODES:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="관리자 또는 부서가 없는 사용자에게는 담당자를 지정할 수 없습니다."
+                    )
+
                 # 타 부서 직원으로 재배정되는 경우, 민원의 소속 부서도 함께 이동시키고
                 # 예전 부서 기준으로 분류되어 있던 task_id는 새 부서에서 의미가 없으므로 초기화한다.
                 if new_assignee.department_code != petition.department_code:
