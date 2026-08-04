@@ -67,6 +67,7 @@ class LogDetail(BaseModel):
     is_deleted: bool
     created_at: Optional[str]
     updated_at: Optional[str]
+    updated_by_name: Optional[str]
 
 class KnowledgeAttachmentDetail(BaseModel):
     attachment_id: int
@@ -412,9 +413,16 @@ def get_knowledge_detail(
     ).order_by(KnowledgeLog.created_at.asc()).all()
 
     log_ids = [log.log_id for log in logs_from_db]
-    user_ids_from_logs = {log.user_id for log in logs_from_db if log.user_id}
 
-    # 4-1. 로그에 연결된 태그 일괄 조회
+    # 4-1. 로그 작성자/수정자 ID 수집
+    user_ids_from_logs = set()
+    for log in logs_from_db:
+        if log.user_id:
+            user_ids_from_logs.add(str(log.user_id))
+        if log.updated_by:
+            user_ids_from_logs.add(str(log.updated_by))
+
+    # 4-2. 로그에 연결된 태그 일괄 조회
     tags_map = {}
     if log_ids:
         tag_results = db.query(
@@ -430,11 +438,11 @@ def get_knowledge_detail(
                 tags_map[log_id] = []
             tags_map[log_id].append(TagDetail(tag_id=tag_id, name=tag_name))
 
-    # 4-2. 로그 작성자 이름 일괄 조회
+    # 4-3. 로그 작성자/수정자 이름 일괄 조회
     log_user_name_map = {}
     if user_ids_from_logs:
         users_from_logs = db.query(User.user_id, User.name).filter(User.user_id.in_(list(user_ids_from_logs))).all()
-        log_user_name_map = {user_id: name for user_id, name in users_from_logs}
+        log_user_name_map = {str(user_id): name for user_id, name in users_from_logs}
 
     # 5. 최종 응답 데이터 구성
     log_details = []
@@ -448,6 +456,7 @@ def get_knowledge_detail(
             is_deleted=bool(log.is_deleted),
             created_at=log.created_at.isoformat() if log.created_at else None,
             updated_at=log.updated_at.isoformat() if log.updated_at else None,
+            updated_by_name=log_user_name_map.get(str(log.updated_by)) if log.updated_by is not None else None,
         ))
 
     return KnowledgeDetailResponse(
@@ -619,6 +628,7 @@ def update_knowledge_log(
                 db.add(KnowledgeLogTag(log_id=log_id, tag_id=tag_id))
 
     log_to_update.updated_by = current_user.user_id
+    log_to_update.updated_at = func.now()
     db.commit()
     _sync_knowledge_index(db, log_to_update.knowledge_id)
     return LogResponse(log_id=log_id, message="노하우가 성공적으로 수정되었습니다.")
