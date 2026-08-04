@@ -29,6 +29,11 @@ def check_write_permission(user: User):
     if not (is_admin or is_head):
         raise HTTPException(status_code=403, detail="작성 권한이 없습니다. 관리자 또는 부서장만 가능합니다.")
 
+def check_owner_permission(user: User, announcement: Announcement):
+    """수정/삭제는 역할과 무관하게 작성자 본인만 가능하다 (관리자도 다른 관리자의 공지는 못 건드림)."""
+    if str(announcement.created_by) != str(user.user_id):
+        raise HTTPException(status_code=403, detail="본인이 작성한 공지사항만 수정/삭제할 수 있습니다.")
+
 # ----------------------------------------------------------------
 # 유틸
 # ----------------------------------------------------------------
@@ -291,6 +296,8 @@ async def update_announcement(
     if not a:
         raise HTTPException(status_code=404, detail="존재하지 않는 공지사항입니다.")
 
+    check_owner_permission(current_user, a)
+
     # 텍스트 필드 업데이트
     if body.title is not None:
         a.title = body.title
@@ -342,6 +349,8 @@ def delete_announcement(
     ).first()
     if not a:
         raise HTTPException(status_code=404, detail="존재하지 않는 공지사항입니다.")
+
+    check_owner_permission(current_user, a)
 
     a.is_deleted = True
     a.deleted_at = datetime.now(timezone.utc)
