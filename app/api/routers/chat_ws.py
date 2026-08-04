@@ -76,7 +76,7 @@ async def broadcast_new_message(
             "room_id": room_id,
             "sender_id": sender_id,
             "content": message.content,
-            "created_at": message.created_at.isoformat(),
+            "created_at": message.created_at.isoformat() + "Z",
             "attachments": attachments or [],
         },
     }
@@ -106,7 +106,7 @@ async def broadcast_new_message(
                         "notification_id": notification.notification_id,
                         "room_id": room_id,
                         "message_id": message_id,
-                        "created_at": notification.created_at.isoformat(),
+                        "created_at": notification.created_at.isoformat() + "Z",
                     },
                 }
                 await _broadcast(elsewhere_sockets, message_payload)

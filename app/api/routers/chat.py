@@ -177,7 +177,7 @@ async def send_message_with_attachment(
         room_id=new_message.room_id,
         sender_id=str(new_message.sender_id),
         content=new_message.content,
-        created_at=new_message.created_at.isoformat(),
+        created_at=new_message.created_at.isoformat() + "Z",
         attachments=attachment_infos
     )
 
@@ -221,7 +221,7 @@ def get_room_messages(
             room_id=m.room_id,
             sender_id=str(m.sender_id),
             content=m.content,
-            created_at=m.created_at.isoformat(),
+            created_at=m.created_at.isoformat() + "Z",
             attachments=attachments_map.get(m.message_id, [])
         ))
     return response

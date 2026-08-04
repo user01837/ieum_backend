@@ -17,6 +17,10 @@ engine = create_engine(
     pool_pre_ping=True,
     # MySQL 기본 wait_timeout(8시간)보다 짧게 잡아 유휴 커넥션을 주기적으로 재생성한다.
     pool_recycle=3600,
+    # DB 서버(host OS)의 시스템 타임존에 따라 NOW()/CURRENT_TIMESTAMP가 다르게 찍히는
+    # 문제를 막기 위해, 커넥션 세션 타임존을 UTC로 고정한다. 이걸 안 하면 로컬(KST)과
+    # 배포 서버(UTC)에서 같은 코드가 서로 다른 시간을 저장하게 된다.
+    connect_args={"init_command": "SET time_zone='+00:00'"},
 )
 
 Base = declarative_base()
