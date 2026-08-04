@@ -72,6 +72,7 @@ class AnnouncementListItem(BaseModel):
     announcementId: int
     title:          str
     isPinned:       bool
+    createdBy:      int
     createdByName:  str
     departmentName:  Optional[str]
     createdAt:      str
@@ -167,6 +168,7 @@ def get_announcement_list(
             announcementId=a.announcement_id,
             title=a.title,
             isPinned=a.is_pinned,
+            createdBy=a.created_by,
             createdByName=creator_name or "",
             departmentName=dept_name if a.department_code else "전체",
             createdAt=a.created_at.isoformat(),
