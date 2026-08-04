@@ -638,6 +638,13 @@ def temp_save_petition(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="새로 지정할 담당자를 찾을 수 없습니다."
                     )
+
+                # 타 부서 직원으로 재배정되는 경우, 민원의 소속 부서도 함께 이동시키고
+                # 예전 부서 기준으로 분류되어 있던 task_id는 새 부서에서 의미가 없으므로 초기화한다.
+                if new_assignee.department_code != petition.department_code:
+                    petition.department_code = new_assignee.department_code
+                    petition.task_id = None
+
                 petition.assignee_user_id = new_assignee_id_str
                 to_user_id = new_assignee_id_str
 

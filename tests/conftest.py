@@ -8,7 +8,7 @@ from app.db.database import Base
 from app.db.session import get_db
 from app.api.routers.auth import get_current_user
 from app.models.user import User
-from app.models import chat, notification, announcement, department  # noqa: F401  (to register chat/notification/announcement/department models with Base)
+from app.models import chat, notification, announcement, department, petition_assignee_history  # noqa: F401  (to register chat/notification/announcement/department/petition_assignee_history models with Base)
 
 TEST_DATABASE_URL = "sqlite:///:memory:"
 
