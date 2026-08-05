@@ -222,6 +222,25 @@ def create_user(
                 change_type="01",
             ))
 
+        # 협력 직원으로 참여 중이던 사업도 후임자로 승계
+        predecessor_collaborator_memberships = db.query(ProjectMember).join(
+            Project, ProjectMember.project_id == Project.project_id
+        ).filter(
+            ProjectMember.user_id == predecessor_id,
+            ProjectMember.role_code == "02",
+            Project.stage_code == "01",
+        ).all()
+
+        for pm in predecessor_collaborator_memberships:
+            pm.user_id = successor_id
+
+            db.add(ProjectMemberHistory(
+                project_id=pm.project_id,
+                from_user_id=predecessor_id,
+                to_user_id=successor_id,
+                change_type="01",
+            ))
+
         # 2. 부장한테 임시 이관됐던 저장 사업 → 후임자로 재배정
         _transfer_temporarily_assigned_projects(db, predecessor_id, successor_id)
 
@@ -416,12 +435,6 @@ def update_user(
             # 기존 담당 업무 초기화
             db.query(TaskAssignee).filter(TaskAssignee.user_id == userId).delete(synchronize_session=False)
 
-            # 부서 이동 시 기존 전임자가 새 부서 소속이 아니면 전임자 관계 해제
-            if user_to_update.predecessor_user_id:
-                predecessor = db.query(User).filter(User.user_id == user_to_update.predecessor_user_id).first()
-                if predecessor and predecessor.department_code != request.departmentCode:
-                    user_to_update.predecessor_user_id = None
-
             user_to_update.department_code = request.departmentCode
             user_to_update.system_role_code = '02' if request.departmentCode == '09' else '01'
 
@@ -559,6 +572,25 @@ def update_user(
                     pm.user_id = successor_id
                 db.add(ProjectMemberHistory(project_id=pm.project_id, from_user_id=predecessor_id, to_user_id=successor_id, change_type="01"))
 
+            # 협력 직원으로 참여 중이던 사업도 후임자로 승계
+            predecessor_collaborator_memberships = db.query(ProjectMember).join(
+                Project, ProjectMember.project_id == Project.project_id
+            ).filter(
+                ProjectMember.user_id == predecessor_id,
+                ProjectMember.role_code == "02",
+                Project.stage_code == "01",
+            ).all()
+
+            for pm in predecessor_collaborator_memberships:
+                pm.user_id = successor_id
+
+                db.add(ProjectMemberHistory(
+                    project_id=pm.project_id,
+                    from_user_id=predecessor_id,
+                    to_user_id=successor_id,
+                    change_type="01",
+                ))
+            
             # 부장한테 임시 이관됐던 저장 사업 → 후임자로 재배정
             _transfer_temporarily_assigned_projects(db, predecessor_id, successor_id)
 
