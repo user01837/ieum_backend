@@ -506,37 +506,35 @@ def update_user(
                 p.status_code = "01"
                 db.add(PetitionAssigneeHistory(petition_id=p.petition_id, from_user_id=predecessor_id, to_user_id=successor_id, change_type="01"))
 
-            department_head = db.query(User).filter(
-                User.department_code == predecessor_user.department_code,
-                User.position_code == '01'
-            ).first()
+            # 전임자로부터 '임시 배정'(change_type='02')받은 사람에게서 후임자로 클로백한다.
+            # 부서이동 시 predecessor_user.department_code는 이미 새 부서로 바뀐 뒤라,
+            # "전임자의 현재 부서"를 기준으로 부장을 다시 찾으면 실제로 민원을 임시
+            # 배정받은 '이전' 부서의 부장을 찾지 못한다 (_transfer_petitions_on_user_change가
+            # 부서이동 시 이전 부서 기준으로 임시 배정하기 때문). 따라서 부장을 다시 추정하지 않고,
+            # 이력 테이블에서 "전임자 -> 누군가, 임시배정" 기록을 직접 찾아 그 사람에게서 클로백한다.
+            latest_history_subquery = db.query(
+                PetitionAssigneeHistory.petition_id,
+                func.max(PetitionAssigneeHistory.history_id).label('max_history_id')
+            ).group_by(PetitionAssigneeHistory.petition_id).subquery()
 
-            if department_head:
-                department_head_id = department_head.user_id
+            petitions_to_transfer = db.query(Petition).join(
+                PetitionAssigneeHistory, Petition.petition_id == PetitionAssigneeHistory.petition_id
+            ).join(
+                latest_history_subquery,
+                (PetitionAssigneeHistory.petition_id == latest_history_subquery.c.petition_id) &
+                (PetitionAssigneeHistory.history_id == latest_history_subquery.c.max_history_id)
+            ).filter(
+                Petition.status_code != '04',
+                Petition.assignee_user_id == PetitionAssigneeHistory.to_user_id,
+                PetitionAssigneeHistory.from_user_id == predecessor_id,
+                PetitionAssigneeHistory.change_type == '02'
+            ).all()
 
-                latest_history_subquery = db.query(
-                    PetitionAssigneeHistory.petition_id,
-                    func.max(PetitionAssigneeHistory.history_id).label('max_history_id')
-                ).group_by(PetitionAssigneeHistory.petition_id).subquery()
-
-                petitions_to_transfer = db.query(Petition).join(
-                    PetitionAssigneeHistory, Petition.petition_id == PetitionAssigneeHistory.petition_id
-                ).join(
-                    latest_history_subquery,
-                    (PetitionAssigneeHistory.petition_id == latest_history_subquery.c.petition_id) &
-                    (PetitionAssigneeHistory.history_id == latest_history_subquery.c.max_history_id)
-                ).filter(
-                    Petition.assignee_user_id == department_head_id,
-                    Petition.status_code != '04',
-                    PetitionAssigneeHistory.from_user_id == predecessor_id,
-                    PetitionAssigneeHistory.to_user_id == department_head_id,
-                    PetitionAssigneeHistory.change_type == '02'
-                ).all()
-
-                for p in petitions_to_transfer:
-                    p.assignee_user_id = successor_id
-                    p.status_code = "01"
-                    db.add(PetitionAssigneeHistory(petition_id=p.petition_id, from_user_id=department_head_id, to_user_id=successor_id, change_type="01"))
+            for p in petitions_to_transfer:
+                temp_holder_id = p.assignee_user_id
+                p.assignee_user_id = successor_id
+                p.status_code = "01"
+                db.add(PetitionAssigneeHistory(petition_id=p.petition_id, from_user_id=temp_holder_id, to_user_id=successor_id, change_type="01"))
 
             # --- 사업(Project) 승계 로직 ---
             predecessor_owner_memberships = db.query(ProjectMember).join(
