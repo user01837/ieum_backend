@@ -363,7 +363,10 @@ def get_petitions(
     else:
         # 일반 사용자 필터링 로직
         if scope.upper() == "MY":
-            query = query.filter(Petition.assignee_user_id == current_user.user_id)
+            query = query.filter(
+                Petition.assignee_user_id == current_user.user_id,
+                Petition.department_code == current_user.department_code
+            )
         elif scope.upper() == "TASK":
             # taskId가 제공된 경우, 해당 업무로 추가 필터링
             if taskId is not None:
@@ -389,10 +392,12 @@ def get_petitions(
         # scope == "ALL"은 별도 필터링 없음
 
         # 보안/개인정보 보호 규칙 적용:
-        # 관리자가 아닌 경우, 자신에게 할당된 민원 또는 '완료' 상태의 민원만 볼 수 있음
-        query = query.filter(
-            or_(Petition.assignee_user_id == current_user.user_id, Petition.status_code == "04")
-        )
+        # 관리자가 아닌 경우, 자신에게 할당된 민원 또는 '완료' 상태의 민원만 볼 수 있음.
+        # 단, 'MY' 스코프일 때는 현재 부서의 할당 민원만 보여야 하므로 완료 민원 조건은 제외.
+        if scope.upper() != "MY":
+            query = query.filter(
+                or_(Petition.assignee_user_id == current_user.user_id, Petition.status_code == "04")
+            )
     
     # 3. 상태(status)에 따른 필터링
     if petition_status != "ALL":
