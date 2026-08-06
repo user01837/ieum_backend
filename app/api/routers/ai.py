@@ -151,7 +151,9 @@ async def proxy_knowledge_chat(
                     "question": request.question,
                     "department_code": current_user.department_code,
                 },
-                timeout=60.0
+                # CPU 추론 환경에서는 60초를 넘기는 경우가 있어 legal-chat과 동일하게
+                # AI 서버 쪽 Ollama 호출 타임아웃(120초)에 맞춘다.
+                timeout=120.0
             )
             response.raise_for_status()
             return response.json()
