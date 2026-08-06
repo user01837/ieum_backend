@@ -36,12 +36,15 @@ def search_users(
     scope: str = Query(..., description="검색 범위: dept(같은 과) | all(전체 부서)"),
     departmentCode: Optional[str] = Query(None, description="부서 코드 필터 (scope=all일 때)"),
     keyword: Optional[str] = Query(None, description="이름 또는 사번 검색어"),
+    includeInactive: bool = Query(False, description="휴직/퇴직 직원 포함 여부 (전임자 지정 등에서 사용)"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     query = db.query(User, Department).outerjoin(
         Department, User.department_code == Department.department_code
-    ).filter(User.status_code == '01')
+    )
+    if not includeInactive:
+        query = query.filter(User.status_code == '01')
 
     # scope 처리
     if scope == "dept":
