@@ -437,9 +437,9 @@ def get_petitions(
             taskName=task_name,
             assigneeName=assignee_user.name if assignee_user else None,
             assigneePositionName=POSITION_MAP.get(assignee_user.position_code) if assignee_user else None,
-            receivedAt=p.received_at.isoformat() if p.received_at else None,
+            receivedAt=p.received_at.isoformat() + "Z" if p.received_at else None,
             dueDate=p.due_date.isoformat() if p.due_date else None,
-            answeredAt=p.answered_at.isoformat() if p.answered_at else None,
+            answeredAt=p.answered_at.isoformat() + "Z" if p.answered_at else None,
             departmentCode=p.department_code,
             departmentName=department_name,
         ) for p, task_name, assignee_user, department_name in results
@@ -551,9 +551,9 @@ def get_petition_detail(
         departmentName=department_name,
         taskName=task_name,
         assignee=assignee_info,
-        receivedAt=p.received_at.isoformat() if p.received_at else None,
+        receivedAt=p.received_at.isoformat() + "Z" if p.received_at else None,
         dueDate=p.due_date.isoformat() if p.due_date else None,
-        answeredAt=p.answered_at.isoformat() if p.answered_at else None,
+        answeredAt=p.answered_at.isoformat() + "Z" if p.answered_at else None,
         manualAnswer=p.manual_answer,
         attachments=attachments_list
     )

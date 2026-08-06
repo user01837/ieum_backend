@@ -42,7 +42,7 @@ def list_notifications(
             room_id=n.room_id,
             message_id=n.message_id,
             is_read=n.is_read,
-            created_at=n.created_at.isoformat(),
+            created_at=n.created_at.isoformat() + "Z",
         )
         for n in rows
     ]

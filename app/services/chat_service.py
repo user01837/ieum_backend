@@ -83,7 +83,7 @@ def list_rooms_for_user(db: Session, user_id: str) -> list[dict]:
             "is_group": room.is_group,
             "member_ids": member_ids,
             "last_message": last_message.content if last_message else None,
-            "last_message_at": last_message.created_at.isoformat() if last_message else None,
+            "last_message_at": last_message.created_at.isoformat() + "Z" if last_message else None,
             "unread_count": unread_map.get(room.room_id, 0),
         })
     result.sort(key=lambda r: r["last_message_at"] or "", reverse=True)

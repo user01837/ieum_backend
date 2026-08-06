@@ -168,7 +168,7 @@ def date_to_str(d) -> Optional[str]:
     return d.isoformat() if d else None
 
 def datetime_to_str(dt) -> Optional[str]:
-    return dt.isoformat() if dt else None
+    return dt.isoformat() + "Z" if dt else None
 
 def str_to_date(s: Optional[str]) -> Optional[date]:
     if not s:

@@ -292,7 +292,7 @@ def get_knowledge_list(
             department_name=department_name,
             log_count=log_count,
             created_by_name=created_by_name,
-            updated_at=k.updated_at.isoformat() if k.updated_at else None,
+            updated_at=k.updated_at.isoformat() + "Z" if k.updated_at else None,
         ))
 
     return KnowledgeListResponse(
@@ -454,8 +454,8 @@ def get_knowledge_detail(
             content=log.content,
             tags=tags_map.get(log.log_id, []),
             is_deleted=bool(log.is_deleted),
-            created_at=log.created_at.isoformat() if log.created_at else None,
-            updated_at=log.updated_at.isoformat() if log.updated_at else None,
+            created_at=log.created_at.isoformat() + "Z" if log.created_at else None,
+            updated_at=log.updated_at.isoformat() + "Z" if log.updated_at else None,
             updated_by_name=log_user_name_map.get(str(log.updated_by)) if log.updated_by is not None else None,
         ))
 
@@ -474,8 +474,8 @@ def get_knowledge_detail(
         created_by=str(knowledge.created_by) if knowledge.created_by is not None else None,
         created_by_name=created_by_name,
         updated_by_name=updated_by_name,
-        created_at=knowledge.created_at.isoformat() if knowledge.created_at else None,
-        updated_at=knowledge.updated_at.isoformat() if knowledge.updated_at else None,
+        created_at=knowledge.created_at.isoformat() + "Z" if knowledge.created_at else None,
+        updated_at=knowledge.updated_at.isoformat() + "Z" if knowledge.updated_at else None,
         logs=log_details,
         attachments=attachment_details
     )
@@ -539,7 +539,7 @@ def create_knowledge(
     return KnowledgeCreateResponse(
         knowledge_id=new_knowledge.knowledge_id,
         title=new_knowledge.title,
-        created_at=new_knowledge.created_at.isoformat()
+        created_at=new_knowledge.created_at.isoformat() + "Z"
     )
 
 @router.post(

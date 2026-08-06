@@ -284,7 +284,8 @@ def get_home_dashboard(
 
         # 6. 공지사항
         announcement_results = db.query(Announcement).filter(Announcement.is_deleted == False).order_by(Announcement.is_pinned.desc(), Announcement.created_at.desc()).limit(5).all()
-        announcements_list = [SimpleAnnouncement(title=a.title, date=a.created_at.date().isoformat()) for a in announcement_results]
+        # DB에 UTC로 저장된 시각을 KST로 보정한 뒤 날짜만 취한다 (자정 근처 하루 밀림 방지)
+        announcements_list = [SimpleAnnouncement(title=a.title, date=(a.created_at + timedelta(hours=9)).date().isoformat()) for a in announcement_results]
 
         # 7. 최근 등록/수정 직원 현황
         recent_users_results = db.query(User, Department.name.label("department_name")).outerjoin(Department, User.department_code == Department.department_code).order_by(User.updated_at.desc()).limit(5).all()
@@ -349,7 +350,7 @@ def get_home_dashboard(
                 id=a.announcement_id,
                 category="공지",
                 title=a.title,
-                date=a.created_at.date().isoformat()) for a in announcement_results
+                date=(a.created_at + timedelta(hours=9)).date().isoformat()) for a in announcement_results
         ]
 
         # 3. 긴급 민원 (D-3 이내)
@@ -365,7 +366,7 @@ def get_home_dashboard(
 
         # 4. 최근 접수 민원 (최신 3개)
         recent_petitions_results = db.query(Petition).filter(Petition.assignee_user_id == current_user.user_id).order_by(Petition.received_at.desc()).limit(3).all()
-        recent_petitions = [RecentPetitionItem(complaintId=p.petition_id, receivedAt=p.received_at.isoformat() if p.received_at else None, dueDate=p.due_date.isoformat() if p.due_date else None, title=p.title, statusName=STATUS_MAP.get(p.status_code)) for p in recent_petitions_results]
+        recent_petitions = [RecentPetitionItem(complaintId=p.petition_id, receivedAt=p.received_at.isoformat() + "Z" if p.received_at else None, dueDate=p.due_date.isoformat() if p.due_date else None, title=p.title, statusName=STATUS_MAP.get(p.status_code)) for p in recent_petitions_results]
 
         # 5. 내 사업/프로젝트 목록 (최신 5개)
         user_project_ids_query = db.query(ProjectMember.project_id).filter(ProjectMember.user_id == current_user.user_id).subquery()

@@ -99,7 +99,7 @@ def get_due_soon_complaints(
         items.append(DueSoonItem(
             complaintId=p.petition_id,
             title=p.title,
-            receivedAt=p.received_at.isoformat() if p.received_at else None,
+            receivedAt=p.received_at.isoformat() + "Z" if p.received_at else None,
             assigneeName=assignee.name if assignee else None,
             dDay=d_day,
         ))

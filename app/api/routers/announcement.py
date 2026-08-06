@@ -171,7 +171,7 @@ def get_announcement_list(
             createdBy=a.created_by,
             createdByName=creator_name or "",
             departmentName=dept_name if a.department_code else "전체",
-            createdAt=a.created_at.isoformat(),
+            createdAt=a.created_at.isoformat() + "Z",
             hasAttachment=has_attachment,
         ))
 
@@ -220,8 +220,8 @@ def get_announcement_detail(
         createdByName=creator.name if creator else "",
         updatedByName=updater.name if updater else None,
         departmentName=get_department_name(a.department_code, db),
-        createdAt=a.created_at.isoformat(),
-        updatedAt=a.updated_at.isoformat(),
+        createdAt=a.created_at.isoformat() + "Z",
+        updatedAt=a.updated_at.isoformat() + "Z",
         attachments=attachment_infos,
     )
 
