@@ -151,9 +151,12 @@ async def proxy_knowledge_chat(
                     "question": request.question,
                     "department_code": current_user.department_code,
                 },
-                # CPU 추론 환경에서는 60초를 넘기는 경우가 있어 legal-chat과 동일하게
-                # AI 서버 쪽 Ollama 호출 타임아웃(120초)에 맞춘다.
-                timeout=120.0
+                # 노하우 챗봇은 참고 카드 여러 건의 전체 내용을 프롬프트에 넣기 때문에
+                # legal-chat보다 생성 시간이 오래 걸린다(로컬 직접 테스트 시 약 85초).
+                # 배포 환경에서는 AWS -> ngrok -> 로컬 AI 서버 경로의 네트워크 오버헤드가
+                # 더해져 120초를 넘겨 ReadTimeout(RequestError)이 발생하는 사례가 확인됨.
+                # AI 서버 쪽 Ollama 호출 타임아웃(150초)보다 여유 있게 180초로 설정.
+                timeout=180.0
             )
             response.raise_for_status()
             return response.json()
