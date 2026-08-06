@@ -303,7 +303,7 @@ def get_project_list(
 
     total_elements = query.count()
     total_pages = math.ceil(total_elements / size)
-    items = query.order_by(Project.start_date.asc()).offset(page * size).limit(size).all()
+    items = query.order_by(Project.start_date.desc()).offset(page * size).limit(size).all()
 
     def get_role_type(project_id: int, user_id: int, is_admin: bool) -> str:
         if is_admin:
