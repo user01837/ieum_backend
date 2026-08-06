@@ -41,7 +41,7 @@ def search_users(
 ):
     query = db.query(User, Department).outerjoin(
         Department, User.department_code == Department.department_code
-    )
+    ).filter(User.status_code == '01')
 
     # scope 처리
     if scope == "dept":

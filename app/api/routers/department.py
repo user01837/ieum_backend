@@ -63,7 +63,9 @@ def get_department_members(department_code: str, db: Session = Depends(get_db)):
         )
 
     # 2. 해당 부서의 모든 조직원 조회
-    members_from_db = db.query(User).filter(User.department_code == department_code).all()
+    members_from_db = db.query(User).filter(
+        User.department_code == department_code, User.status_code == '01'
+    ).all()
 
     # 3. 응답 데이터 형식으로 변환
     member_list = [
