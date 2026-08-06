@@ -238,54 +238,75 @@ def create_external_petition(
             task_id = None
 
     # ---------------------------------------------------------
-    # 4. 해당 Task 담당자 중 업무량이 가장 적은 담당자 자동 배정
+    # 4. 담당자 자동 배정
+    #
+    # 원칙: 접수와 동시에 반드시 담당자가 배정되어야 한다. 해당 업무(Task)
+    # 담당자 중 업무량이 가장 적은 사람을 우선 배정하되, Task 분류에
+    # 실패했거나(task_id=None) 해당 Task에 유효한 담당자가 한 명도 없는
+    # 경우(TASK_ASSIGNEE 고아 레코드 등)에는 부서 전체 재직자 중 업무량이
+    # 가장 적은 사람에게 배정한다.
     # ---------------------------------------------------------
+    def _least_busy(candidate_ids: list) -> Optional[str]:
+        if not candidate_ids:
+            return None
+
+        open_counts = {user_id: 0 for user_id in candidate_ids}
+
+        counted = (
+            db.query(
+                Petition.assignee_user_id,
+                func.count(Petition.petition_id),
+            )
+            .filter(
+                Petition.assignee_user_id.in_(candidate_ids),
+                Petition.status_code != "04",
+            )
+            .group_by(
+                Petition.assignee_user_id
+            )
+            .all()
+        )
+
+        for user_id, count in counted:
+            open_counts[user_id] = count
+
+        return min(open_counts, key=open_counts.get)
+
     assignee_user_id = None
 
     if task_id is not None:
-
-        candidate_ids = [
+        # TASK_ASSIGNEE에는 이미 탈퇴/삭제된 유저를 가리키는 고아 레코드가 남아있을 수 있어
+        # (FK 미보장), USER 테이블과 조인해 실제로 존재하고 재직 중인 담당자만 후보로 삼는다.
+        # 그렇지 않으면 아래 INSERT에서 fk_petition_assignee 위반으로 500 에러가 난다.
+        task_candidate_ids = [
             row.user_id
             for row in (
                 db.query(TaskAssignee.user_id)
+                .join(User, User.user_id == TaskAssignee.user_id)
                 .filter(
-                    TaskAssignee.task_id == task_id
+                    TaskAssignee.task_id == task_id,
+                    User.status_code == "01",
                 )
                 .all()
             )
         ]
+        assignee_user_id = _least_busy(task_candidate_ids)
 
-        if candidate_ids:
-
-            # 담당자별 현재 미완료 민원 수
-            open_counts = {
-                user_id: 0
-                for user_id in candidate_ids
-            }
-
-            counted = (
-                db.query(
-                    Petition.assignee_user_id,
-                    func.count(Petition.petition_id),
-                )
+    if assignee_user_id is None:
+        # Task 분류 실패 또는 해당 Task에 유효한 담당자 없음 -> 부서 전체 재직자 중
+        # 업무량이 가장 적은 사람에게 배정 (department_code는 08 등 기본값 포함, 항상 유효함)
+        department_candidate_ids = [
+            row.user_id
+            for row in (
+                db.query(User.user_id)
                 .filter(
-                    Petition.assignee_user_id.in_(candidate_ids),
-                    Petition.status_code != "04",
-                )
-                .group_by(
-                    Petition.assignee_user_id
+                    User.department_code == department_code,
+                    User.status_code == "01",
                 )
                 .all()
             )
-
-            for user_id, count in counted:
-                open_counts[user_id] = count
-
-            # 가장 처리 중인 민원이 적은 담당자 선택
-            assignee_user_id = min(
-                open_counts,
-                key=open_counts.get,
-            )
+        ]
+        assignee_user_id = _least_busy(department_candidate_ids)
 
     # ---------------------------------------------------------
     # 5. 민원 생성
